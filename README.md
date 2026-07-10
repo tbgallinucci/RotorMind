@@ -1,4 +1,4 @@
-# Rotordynamics Copilot
+# RotorMind — a rotordynamics copilot
 
 [![CI](https://github.com/tbgallinucci/RotorMind/actions/workflows/ci.yml/badge.svg)](https://github.com/tbgallinucci/RotorMind/actions/workflows/ci.yml)
 

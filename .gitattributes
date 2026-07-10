@@ -2,3 +2,6 @@
 * text=auto
 *.bat text eol=crlf
 *.png binary
+
+# Demo simulation reports are generated output — exclude from language stats
+assistant/wiki/runs/** linguist-generated=true
