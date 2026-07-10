@@ -1,3 +1,11 @@
+"""LEGACY standalone Streamlit UI for the FEA engine.
+
+Kept for reference / standalone use (`pip install -e ".[ui]"` then
+`streamlit run engine/rotordynamics/streamlit_app.py`). The maintained
+interface is the assistant's chat UI, which drives the engine through
+`assistant/app/tools.py`.
+"""
+
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,8 +14,6 @@ from scipy.linalg import solve
 import io
 import base64
 from datetime import datetime
-import warnings
-warnings.filterwarnings('ignore')
 
 # Configure Streamlit page
 st.set_page_config(
@@ -17,7 +23,7 @@ st.set_page_config(
 )
 
 # Import the analysis class
-from main_rotordynamic import RotordynamicAnalysis
+from engine.rotordynamics.analysis import RotordynamicAnalysis
 
 class StreamlitRotordynamicApp:
     def __init__(self):

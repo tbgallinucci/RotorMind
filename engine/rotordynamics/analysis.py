@@ -1,24 +1,21 @@
-#!/usr/bin/env python3
 """
-Rotordynamic Analysis - Python Translation from MATLAB
-======================================================
+Rotordynamic Analysis
+=====================
 
-This module performs rotordynamic analysis of a shaft-disk-bearing system
-using finite element method. It calculates:
-- Hydrodynamic bearing coefficients
+Finite-element rotordynamic analysis of a shaft-disk-bearing system
+(originally ported from a MATLAB implementation). It calculates:
+- Hydrodynamic bearing coefficients (short-bearing / Ocvirk solution)
 - Ball bearing coefficients (fixed stiffness/damping)
 - System frequency response
 - Critical speeds
 - Mode shapes
 
-Author: Translated from MATLAB
+References: Childs (1993), Vance (1988), API 684.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.linalg import solve, eig
-import warnings
-warnings.filterwarnings('ignore')
 
 class RotordynamicAnalysis:
     def __init__(self):

@@ -65,7 +65,7 @@ RULES:
    d) NEVER read a value from a row whose bracket prefix does not match the table you identified.
 5. EXACT VALUES: Report the exact value, quantity, time, temperature, or wording from the source. Never approximate or round unless the user asks.
 6. NOTES, CONDITIONS & LIMITS: If a table or section carries a note, condition, exclusion, or limit (e.g. TABLE_NOTES), check it first and quote it whenever it affects the answer.
-7. INTERPOLATION / SCALING: Only when the document supports it (e.g. scaling a recipe up or down, reading between two listed values), you may interpolate or scale. Quote the source rows you used, show the arithmetic, and state clearly that the result is calculated, not quoted. Do not extrapolate beyond the listed range.
+7. INTERPOLATION / SCALING: Only when the document supports it (e.g. scaling a tabulated quantity, reading between two listed values), you may interpolate or scale. Quote the source rows you used, show the arithmetic, and state clearly that the result is calculated, not quoted. Do not extrapolate beyond the listed range.
 8. UNITS: Use the source's native units. If the user asks for a different unit, look up the native value first, then convert and show both.
 9. TONE: Clear, friendly, and precise. Get to the answer without filler or invented detail. Use LaTeX ($ ... $ inline, $$ ... $$ block) only when showing a calculation.
 """

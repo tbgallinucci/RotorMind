@@ -1,5 +1,7 @@
 # Rotordynamics Copilot
 
+[![CI](https://github.com/tbgallinucci/rotordynamics-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/tbgallinucci/rotordynamics-copilot/actions/workflows/ci.yml)
+
 **An engineering copilot that reasons over rotordynamics theory *and* runs the physics to back up its answers.**
 
 Ask it a theory or standards question and it answers from a curated knowledge base with a citation for every claim. Ask it something numeric — *"what's the first critical speed for this shaft?"* — and it runs a finite-element rotordynamic analysis, files the report into its own knowledge base, and answers with cited, computed results. Every answer, whether from a reference page or a simulation you just ran, carries a source.
@@ -43,6 +45,7 @@ assistant/    AlexandrIA, the chat / RAG layer
     agent.py        tool-calling loop around the LLM
   static/           single-page UI (sidebar + wiki + chat)
   wiki/             knowledge base (theory + ingested run reports)
+    runs/           simulation reports; two demo runs ship as sample output
 knowledge/raw/  source documents
 docs/architecture.md   full design & build plan
 ```
