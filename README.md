@@ -1,6 +1,6 @@
 # Rotordynamics Copilot
 
-[![CI](https://github.com/tbgallinucci/rotordynamics-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/tbgallinucci/rotordynamics-copilot/actions/workflows/ci.yml)
+[![CI](https://github.com/tbgallinucci/RotorMind/actions/workflows/ci.yml/badge.svg)](https://github.com/tbgallinucci/RotorMind/actions/workflows/ci.yml)
 
 **An engineering copilot that reasons over rotordynamics theory *and* runs the physics to back up its answers.**
 
