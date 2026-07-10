@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RotorMind — the rotordynamics copilot</title>
+    <link rel="stylesheet" href="/static/style.css?v=6">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Marked.js for markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- KaTeX for math rendering in chat and wiki pages -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Left Sidebar: Wiki Navigation -->
+        <aside class="sidebar left-sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fas fa-fan"></i>
+                    <span>Rotor<span style="color: var(--accent-primary)">Mind</span></span>
+                </div>
+            </div>
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" id="wiki-search" placeholder="Search pages...">
+            </div>
+            <nav class="wiki-nav" id="wiki-nav">
+                <div class="loading">Loading folder structure...</div>
+            </nav>
+        </aside>
+
+        <div class="resizer" id="left-resizer"></div>
+
+        <!-- Middle Section: Wiki Viewer -->
+        <main class="viewer-section" id="viewer-section">
+            <header class="viewer-header">
+                <div class="view-tabs">
+                    <button class="view-tab active" id="tab-wiki"><i class="fas fa-book"></i> Wiki</button>
+                    <button class="view-tab" id="tab-analysis"><i class="fas fa-gears"></i> Analysis</button>
+                </div>
+                <h1 id="page-title">Welcome</h1>
+                <div class="viewer-actions">
+                    <div class="page-search-container">
+                        <i class="fas fa-search"></i>
+                        <input type="text" id="page-search" placeholder="Search inside this page...">
+                        <span id="page-search-count"></span>
+                        <button id="page-search-prev" class="icon-btn" title="Previous"><i class="fas fa-chevron-up"></i></button>
+                        <button id="page-search-next" class="icon-btn" title="Next"><i class="fas fa-chevron-down"></i></button>
+                    </div>
+                    <button id="download-raw" title="Download Source PDF" style="display: none;"><i class="fas fa-download"></i></button>
+                    <button id="theme-toggle" title="Toggle light/dark theme"><i class="fas fa-sun"></i></button>
+                    <button id="toggle-sidebar" title="Toggle Sidebar"><i class="fas fa-bars"></i></button>
+                </div>
+            </header>
+            <div class="markdown-body" id="wiki-content">
+                <div class="welcome-screen">
+                    <i class="fas fa-fan"></i>
+                    <h2>Rotor<span style="color: var(--accent-primary)">Mind</span></h2>
+                    <p>Your rotordynamics copilot — cited theory and standards notes, plus real FEA runs. Pick a page from the sidebar, configure a run in the Analysis tab, or just ask in chat.</p>
+                </div>
+            </div>
+            <div class="analysis-view hidden" id="analysis-view">
+                <h2><i class="fas fa-gears"></i> FEA Workbench</h2>
+                <p class="analysis-intro">Configure the shaft-disk-bearing system and run the finite-element
+                analysis. The report is ingested into the wiki and becomes citable in chat, exactly like a
+                run the assistant triggers itself.</p>
+                <form id="run-form">
+                    <div class="param-groups">
+                        <fieldset>
+                            <legend><i class="fas fa-minus"></i> Shaft</legend>
+                            <label>Diameter [mm]<input type="number" step="any" id="rp-shaft-d" value="13"></label>
+                            <label>Length [mm]<input type="number" step="any" id="rp-shaft-l" value="747"></label>
+                            <label>Young's modulus [GPa]<input type="number" step="any" id="rp-shaft-e" value="207"></label>
+                            <label>Density [kg/m³]<input type="number" step="any" id="rp-shaft-rho" value="7850"></label>
+                        </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-compact-disc"></i> Disk</legend>
+                            <label>Diameter [mm]<input type="number" step="any" id="rp-disk-d" value="90"></label>
+                            <label>Length [mm]<input type="number" step="any" id="rp-disk-l" value="47"></label>
+                            <label>Mass [kg]<input type="number" step="any" id="rp-disk-m" value="2.3"></label>
+                            <label>Unbalance m·e [g·mm]<input type="number" step="any" id="rp-unbal" value="37"></label>
+                        </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-circle-notch"></i> Bearing 1</legend>
+                            <label>Type<select id="rp-b1-kind" class="bearing-kind"><option value="journal">Journal (hydrodynamic)</option><option value="ball">Ball (rolling element)</option></select></label>
+                            <div class="ball-props hidden" id="rp-b1-ball">
+                                <label>Kxx [MN/m]<input type="number" step="any" id="rp-b1-kxx" value="100"></label>
+                                <label>Kyy [MN/m]<input type="number" step="any" id="rp-b1-kyy" value="100"></label>
+                                <label>Cxx [kN·s/m]<input type="number" step="any" id="rp-b1-cxx" value="1"></label>
+                                <label>Cyy [kN·s/m]<input type="number" step="any" id="rp-b1-cyy" value="1"></label>
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-circle-notch"></i> Bearing 2</legend>
+                            <label>Type<select id="rp-b2-kind" class="bearing-kind"><option value="journal">Journal (hydrodynamic)</option><option value="ball">Ball (rolling element)</option></select></label>
+                            <div class="ball-props hidden" id="rp-b2-ball">
+                                <label>Kxx [MN/m]<input type="number" step="any" id="rp-b2-kxx" value="100"></label>
+                                <label>Kyy [MN/m]<input type="number" step="any" id="rp-b2-kyy" value="100"></label>
+                                <label>Cxx [kN·s/m]<input type="number" step="any" id="rp-b2-cxx" value="1"></label>
+                                <label>Cyy [kN·s/m]<input type="number" step="any" id="rp-b2-cyy" value="1"></label>
+                            </div>
+                        </fieldset>
+                        <fieldset id="rp-film">
+                            <legend><i class="fas fa-oil-can"></i> Journal oil film <span class="legend-note">(shared by both journal bearings)</span></legend>
+                            <label>Bore diameter [mm]<input type="number" step="any" id="rp-film-d" value="30"></label>
+                            <label>Axial length [mm]<input type="number" step="any" id="rp-film-l" value="20"></label>
+                            <label>Radial clearance [µm]<input type="number" step="any" id="rp-clear" value="90"></label>
+                            <label>Oil viscosity [Pa·s]<input type="number" step="any" id="rp-visc" value="0.051"></label>
+                        </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-ruler-horizontal"></i> Axial positions</legend>
+                            <label class="check-label"><input type="checkbox" id="rp-pos-custom"> Custom stations (else: reference layout scaled with length)</label>
+                            <div class="pos-props" id="rp-pos-fields">
+                                <label>Bearing 1 [mm]<input type="number" step="any" id="rp-pos-b1" value="26" disabled></label>
+                                <label>Disk [mm]<input type="number" step="any" id="rp-pos-disk" value="171" disabled></label>
+                                <label>Bearing 2 [mm]<input type="number" step="any" id="rp-pos-b2" value="721" disabled></label>
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-tachometer-alt"></i> Speed sweep</legend>
+                            <label>Start [rad/s]<input type="number" step="any" id="rp-wmin" value="10"></label>
+                            <label>Stop [rad/s]<input type="number" step="any" id="rp-wmax" value="2000"></label>
+                            <label>Step [rad/s]<input type="number" step="any" id="rp-wstep" value="10"></label>
+                        </fieldset>
+                    </div>
+                    <div class="run-actions">
+                        <button type="submit" id="run-submit"><i class="fas fa-play"></i> Run analysis &amp; ingest report</button>
+                        <span id="run-status"></span>
+                    </div>
+                </form>
+                <div class="run-results hidden" id="run-results"></div>
+            </div>
+        </main>
+
+        <!-- Right Sidebar: Chat Interface -->
+        <div class="resizer" id="right-resizer"></div>
+        <aside class="sidebar right-sidebar chat-sidebar" id="chat-sidebar">
+            <header class="chat-header">
+                <div class="chat-title">
+                    <i class="fas fa-fan"></i>
+                    <span>RotorMind</span>
+                </div>
+                <button id="clear-chat" title="Clear History"><i class="fas fa-trash-alt"></i></button>
+            </header>
+            <div class="chat-history" id="chat-history">
+                <div class="chat-message assistant">
+                    <div class="message-content">
+                        Hi! I'm RotorMind. I answer from this project's knowledge base — theory, standards notes, and your simulation runs — and I cite the source for every claim. Ask a question, or ask me to run an analysis.
+                    </div>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <textarea id="chat-input" placeholder="Ask about theory, or request an analysis..." rows="1"></textarea>
+                <button id="send-button"><i class="fas fa-paper-plane"></i></button>
+            </div>
+        </aside>
+    </div>
+
+    <script src="/static/script.js?v=6"></script>
+    <script src="/static/run-panel.js?v=6"></script>
+</body>
+</html>
