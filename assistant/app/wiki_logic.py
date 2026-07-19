@@ -200,10 +200,29 @@ def split_into_sections(content: str) -> list[tuple[str, str]]:
 
     return sections
 
+_DATE_OR_RUN_ID = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:-run-\d+)?\b")
+
+
 def extract_query_numbers(query_lower: str) -> list[float]:
-    """Extracts standalone numbers or decimals, excluding those attached to letters."""
-    # Find numbers that are NOT preceded or followed by letters (identifiers)
-    return [float(n) for n in re.findall(r"(?<![a-zA-Z])(\d+(?:\.\d+)?)(?![a-zA-Z])", query_lower)]
+    """Extracts standalone numbers or decimals, excluding those attached to
+    letters (identifiers) and those that are just date/run-id fragments
+    (e.g. the 2026, 07, 19, 010 inside "2026-07-19-run-010").
+
+    That second exclusion matters: this list feeds score_section_generic's
+    numeric boost, meant to reward a section for containing a genuine
+    engineering quantity from the query (a class rating, a diameter). A
+    date fragment is not that - it's an identifier, and every page's own
+    frontmatter timestamp contains similar-looking digits, plus every run
+    report repeats its own date many times across its sections. Without this
+    filter, any query that names a specific run (as a "does run X comply"
+    question naturally does) had EVERY run report's sections score high
+    purely from the date, flooding the context budget and crowding out the
+    actually relevant standards page - the query never got an answer
+    grounded in the ingested standard because that page never made it into
+    context in the first place.
+    """
+    stripped = _DATE_OR_RUN_ID.sub(" ", query_lower)
+    return [float(n) for n in re.findall(r"(?<![a-zA-Z])(\d+(?:\.\d+)?)(?![a-zA-Z])", stripped)]
 
 def score_section_generic(heading: str, body: str, query_lower: str, target_numbers: list[float] = None) -> float:
     # 1. Word matching

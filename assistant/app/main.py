@@ -130,16 +130,17 @@ async def chat_endpoint(request: ChatRequest):
 
     # 5. Stream Completion through the tool-calling agent loop (Phase 3).
     #    run_agent executes search_knowledge / run_rotordynamic_analysis as the
-    #    model requests them, then streams the final grounded answer.
+    #    model requests them, then streams the final grounded answer as
+    #    newline-delimited JSON events: {"type": "delta"|"replace"|"flag"|"done"|"error", ...}
     async def stream_generator():
         if client is None:
-            yield f"Error: LLM client unavailable: {_client_error}"
+            yield json.dumps({"type": "error", "text": f"LLM client unavailable: {_client_error}"}) + "\n"
             return
         try:
             async for chunk in agent.run_agent(client, messages):
                 yield chunk
         except Exception as e:
-            yield f"Error: {str(e)}"
+            yield json.dumps({"type": "error", "text": str(e)}) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 

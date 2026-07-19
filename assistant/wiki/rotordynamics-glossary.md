@@ -28,17 +28,18 @@ Short working definitions used across this wiki and in the engine's reports. Ori
 | Mode shape | Deflection pattern of the rotor at a natural frequency (e.g. first bending, conical). |
 | FRF | Frequency response function: vibration amplitude at a node vs excitation frequency; peaks mark resonances. |
 | Amplification factor (AF) | Sharpness of a resonance peak, AF = N_c/(N_2 - N_1) by the half-power method; high AF = lightly damped. |
-| Separation margin | Required distance between any critical speed and the operating speed range; grows with AF (see API 684 concepts). |
+| Separation margin | Required distance between any critical speed and the operating speed range; grows with AF. Binding numeric criteria: API 610 SS5.2.4/Appendix I. |
 | Radial clearance (delta) | Gap between journal and bushing radii; the most sensitive journal-bearing design variable. |
 | Sommerfeld-type solutions | Family of closed-form Reynolds-equation solutions (long/short bearing, cavitation conditions). |
 | Run report | This project's citable record of one FEA execution, ingested at wiki/runs/<date>-run-NNN. |
 
 ## Sources
 
-* Definitions written for this project; concepts standard in Childs (1993), Vance (1988), API 684.
+* Definitions written for this project; concepts standard in Childs (1993), Vance (1988), API 610.
 
 ## Related pages
 
 * [Journal Bearing Theory](journal-bearing-theory.md)
 * [Reynolds Equation](reynolds-equation.md)
 * [Critical Speeds and Separation Margin](critical-speeds-and-separation-margin.md)
+* [API 610 - Lateral Analysis Requirements (5.2.4 / Appendix I)](api-610-lateral-analysis.md)

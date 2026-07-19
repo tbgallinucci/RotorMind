@@ -255,31 +255,67 @@ document.addEventListener('DOMContentLoaded', () => {
 
             contentDiv.innerHTML = '';
             assistantMsgDiv.classList.add('typing');
-            let fullReply = '';
-            
+            let displayed = '';   // what the user currently sees
+            let lineBuffer = '';  // partial JSON line split across chunk boundaries
+
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                
-                const chunk = decoder.decode(value, { stream: true });
-                fullReply += chunk;
-                
-                // Parse markdown and citations in progress
-                contentDiv.innerHTML = parseAssistantResponse(fullReply) + '<span class="cursor"></span>';
-                chatHistory.scrollTop = chatHistory.scrollHeight;
+
+                lineBuffer += decoder.decode(value, { stream: true });
+                const lines = lineBuffer.split('\n');
+                lineBuffer = lines.pop(); // last (possibly partial) line stays buffered
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    let evt;
+                    try { evt = JSON.parse(line); } catch { continue; }
+
+                    if (evt.type === 'delta') {
+                        // Optimistic: token arrives, shown immediately.
+                        displayed += evt.text;
+                        contentDiv.innerHTML = parseAssistantResponse(displayed) + '<span class="cursor"></span>';
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    } else if (evt.type === 'replace') {
+                        // Clears an abandoned tool-call preamble (the model
+                        // thought out loud, then called a tool instead of
+                        // answering) — text is empty, more deltas follow.
+                        displayed = evt.text || '';
+                        contentDiv.innerHTML = parseAssistantResponse(displayed) + '<span class="cursor"></span>';
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    } else if (evt.type === 'flag') {
+                        // Grounding guard: a claim couldn't be verified against
+                        // its cited source. The answer text is left exactly as
+                        // streamed — we only append a warning note below it.
+                        let flagDiv = assistantMsgDiv.querySelector('.grounding-flag');
+                        if (!flagDiv) {
+                            flagDiv = document.createElement('div');
+                            flagDiv.className = 'grounding-flag';
+                            assistantMsgDiv.appendChild(flagDiv);
+                        }
+                        flagDiv.innerHTML = '<i class="fas fa-triangle-exclamation"></i> '
+                            + 'Could not verify against the cited source: '
+                            + escapeHtml(evt.text || '');
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    } else if (evt.type === 'error') {
+                        displayed = evt.text || 'Error communicating with AI assistant.';
+                        contentDiv.innerHTML = escapeHtml(displayed);
+                    }
+                    // 'done' needs no action — displayed already holds the final text.
+                }
             }
 
             // Remove cursor and typing class
             assistantMsgDiv.classList.remove('typing');
-            contentDiv.innerHTML = parseAssistantResponse(fullReply);
+            contentDiv.innerHTML = parseAssistantResponse(displayed);
             renderMath(contentDiv);
 
             // Update history
             history.push({ role: 'user', content: message });
-            history.push({ role: 'assistant', content: fullReply });
+            history.push({ role: 'assistant', content: displayed });
 
             // The reply may have ingested a new run report - refresh the tree
             loadPages();

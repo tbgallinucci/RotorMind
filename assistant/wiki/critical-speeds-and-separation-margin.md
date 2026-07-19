@@ -1,14 +1,14 @@
 ---
 type: Practice Note
 title: Critical Speeds and Separation Margin
-description: Critical speeds, Campbell diagrams, damped vs undamped analysis, and the API 684 separation-margin concept summarized in original words; how the engine identifies criticals.
-tags: [rotordynamics, critical-speed, campbell, api-684, separation-margin]
-timestamp: 2026-07-10T00:00:00Z
+description: Critical speeds, Campbell diagrams, and amplification factor summarized in original words - the general theory behind the engine's output; the binding API 610 pass/fail pipeline lives on api-610-lateral-analysis.
+tags: [rotordynamics, critical-speed, campbell, api-610, separation-margin]
+timestamp: 2026-07-19T00:00:00Z
 ---
 
 ## Overview
 
-A critical speed is a rotating speed at which the frequency of a synchronous excitation - almost always residual unbalance at exactly 1x running speed - coincides with a natural frequency of the rotor-bearing system. Passing through or dwelling near a critical produces amplified vibration limited only by the system damping. These notes summarize the concepts *in my own words*; consult API Standard 684 (the rotordynamics tutorial) and API 610/617 for the binding requirements - the standard text itself is copyrighted and is not reproduced here.
+A critical speed is a rotating speed at which the frequency of a synchronous excitation - almost always residual unbalance at exactly 1x running speed - coincides with a natural frequency of the rotor-bearing system. Passing through or dwelling near a critical produces amplified vibration limited only by the system damping. These notes summarize the general theory *in my own words*. For the actual pass/fail pipeline - whether a lateral analysis is even required, and the criteria it's checked against - see [[api-610-lateral-analysis]] (API Standard 610, SS5.2.4 and Appendix I), the binding standard for the shaft-disk-bearing rotor class this project models.
 
 ## Campbell diagram
 
@@ -16,11 +16,9 @@ The Campbell diagram plots the system natural frequencies against running speed.
 
 ## Separation margin - the concept
 
-Operating continuously *at* a critical is unacceptable; standards therefore require the operating speed range to be separated from critical speeds by a margin. In API-style practice:
+Operating continuously *at* a critical is unacceptable; a machine's operating speed range must be separated from its critical speeds by some margin. How much margin is needed depends on how strongly the machine responds at that critical, quantified through the amplification factor (AF) measured or predicted at resonance: sharply-tuned, lightly-damped criticals (high AF) demand a wide margin; heavily damped criticals (low AF, AF <= 2.5) are considered critically damped enough that no separate margin check is required. That AF <= 2.5 cutoff is not just a rule of thumb - [[api-610-lateral-analysis]] documents it as API 610's actual "critically damped" definition (equivalent to a damping ratio xi >= 0.2), used inside its real pass/fail pipeline.
 
-* The margin is defined between every critical speed and the limits of the operating speed range (minimum to maximum continuous speed, including trip range considerations).
-* How much margin is required depends on how strongly the machine responds at that critical, quantified through the amplification factor (AF) measured or predicted at resonance: sharply-tuned, lightly-damped criticals (high AF) demand a wide margin; heavily damped criticals (low AF, roughly AF below 2.5) are considered critically damped enough that no margin is required.
-* Typical figures quoted from API-style rules of thumb: for criticals *below* the minimum operating speed, a margin of the order of 15-16 percent; for criticals *above* the maximum continuous speed, of the order of 20-26 percent, increasing with AF. Always check the current edition for the exact formulae - the numbers here are indicative, not normative.
+For the actual binding pipeline - whether a lateral analysis is even required in the first place, the natural-frequency sweep range, the separation-margin/damping acceptance check, and the allowable-displacement and shop-verification tolerances - see [[api-610-lateral-analysis]]. Always check the current edition of the standard for the exact criteria.
 
 ## Amplification factor
 
@@ -29,16 +27,17 @@ AF is estimated from the response peak with the half-power (3 dB) method: AF = N
 ## Practical workflow with this copilot
 
 1. Ask for the machine's critical speeds - the copilot runs the FEA and reports them with a run citation.
-2. Compare the intended operating speed against each critical: margin = (nearest critical - operating speed) / operating speed.
+2. Compare against the [[api-610-lateral-analysis]] pipeline: is a lateral analysis even required (SS5.2.4.1.1), and if so, do the reported critical speeds and AF clear the separation-margin/damping check (Appendix I)?
 3. If the margin is thin, the classic levers are bearing stiffness/damping (bearing type, clearance, preload), shaft diameter (stiffness scales with d^4), span, and disk placement.
 
 ## Sources
 
-* API Standard 684, "API Standard Paragraphs Rotordynamic Tutorial" - concept definitions (summarized, not reproduced).
+* API Standard 610, "Centrifugal Pumps for Petroleum, Heavy Duty Chemical, and Gas Industry Services", SS5.2.4 and Appendix I - binding lateral-analysis criteria (summarized, not reproduced; see [[api-610-lateral-analysis]]).
 * D. Childs, *Turbomachinery Rotordynamics*, Wiley, 1993 - modal analysis and amplification factors.
 * Original summary notes for this project.
 
 ## Related pages
 
+* [API 610 - Lateral Analysis Requirements (5.2.4 / Appendix I)](api-610-lateral-analysis.md)
 * [Journal Bearing Theory](journal-bearing-theory.md)
 * [Rotordynamics Glossary](rotordynamics-glossary.md)
