@@ -51,12 +51,22 @@ Unless the purchaser specifies otherwise, this is decided by a short decision tr
    sitting anywhere at or below MCS itself obviously fails this test too.
 3. Only if neither exemption applies is a lateral analysis **required** -> go to Step 2.
 
-**What "dry" means here, and why it matters for this copilot:** the *dry* critical
-speed is the rotor's critical speed calculated *without* the pumped liquid's effect on
-bearing/seal stiffness and damping - i.e. the bare mechanical rotor-on-bearings system.
-This is deliberately a different, more conservative number than the normal ("wet")
-critical speed a hydrodynamic bearing analysis reports, because it strips out the
-liquid's stabilizing film effects.
+**What "dry" and "wet" mean here, precisely (SS1.4.7, SS1.4.8) - and why it matters
+for this copilot:** the distinction is sharper than "with vs. without process liquid":
+
+* *Dry* critical speed: the rotor's natural frequency assuming it is supported only
+  at its bearings, and that **those bearings have infinite stiffness** - a rigid-support
+  idealization, not a real bearing's actual behavior.
+* *Wet* critical speed: the natural frequency including the pumped liquid's additional
+  stiffness/damping at internal running clearances, **and** allowing for the bearings'
+  real (finite) flexibility and damping.
+
+So "dry" is not simply "wet minus the liquid" - it also swaps the bearing's real,
+finite stiffness for an idealized infinite one. Since infinite bearing stiffness is
+the stiffest possible support, the true dry critical speed is the *highest* value a
+given shaft/bearing arrangement can have; any calculation using a bearing's real
+(finite) stiffness - wet or otherwise - sits at or below it. See the engine note
+below for what this means in practice.
 
 ## Step 2 - Carrying out and assessing the analysis (Appendix I)
 
@@ -92,49 +102,56 @@ SS5.2.4.2.1), one mode per run.
 peak-to-peak shaft displacement at the point of maximum response must not exceed **35%**
 of the diametral running clearance at that point.
 
-## Shop verification, when specified (SS I.2)
-
-If the purchaser specifies it, the calculated lateral analysis is checked against a
-shop test (rated speed down to 75% of the first critical, or coast-down; only feasible
-on sleeve-bearing rotors with proximity probes at each journal). The rotor's dynamic
-characteristics are considered verified if:
-
-* the observed critical speed(s) fall within **+/-10%** of the calculated value(s), and
-* the measured vibration amplitude(s) fall within **+/-35%** of the calculated value(s).
-
-Test unbalance is sized so the resulting calculated shaft displacement is 150-200% of
-the allowable displacement at the bearing probes, capped at 8x the maximum allowable
-rotor unbalance. If the criteria above aren't met, stiffness/damping coefficients are
-adjusted (with supporting justification, by element type) until calculated and measured
-results agree, and the separation margins are rechecked with the corrected coefficients.
-
 ## What this copilot's engine actually computes today
 
 Be precise about this with users - it's the difference between an honest partial
 answer and an invented one:
 
-* The engine's Campbell-diagram sweep computes **wet** critical speeds only (journal
-  bearing coefficients come from the hydrodynamic oil-film solution at each speed; ball
-  bearing coefficients are the fixed user-supplied stiffness/damping). There is no
-  rigid-support / no-fluid-effect mode, so it cannot currently produce the **dry**
-  critical speed Step 1 needs.
-* `RunParams`/`RunResult` have no **maximum allowable continuous speed (MCS)** field -
-  the speed sweep is a start/stop/step range, not an operating-point spec - so Step 1's
-  20%/30% comparison has no MCS to compare against either.
-* Consequently, this copilot **cannot currently auto-determine Step 1** (is a lateral
-  analysis even required) for a given run. If asked, it should say so - state that MCS
-  and the dry critical speed are not part of the run's inputs/outputs - rather than
-  guess or reuse the wet critical speed as a stand-in.
+* The engine's Campbell-diagram sweep always uses **real, finite** bearing
+  stiffness/damping - journal bearings: hydrodynamic oil-film coefficients from the
+  Reynolds-equation solution at each speed; ball bearings: the fixed user-supplied
+  stiffness/damping. It never uses the infinite/rigid-bearing idealization SS1.4.7
+  defines as "dry", and it never adds the pumped-liquid running-clearance effects
+  SS1.4.8 adds for "wet". A run's reported critical speed is therefore neither the
+  literal dry nor the literal wet number - it is a third case: real bearings, no
+  process-liquid seal effects.
+* That third case is still useful for Step 1, **in one direction only**. Because it
+  uses finite (not infinite) bearing stiffness, a run's critical speed is
+  systematically **lower than or equal to** the true dry value for the same rotor
+  (finite support stiffness can only match or reduce the natural frequency relative
+  to the infinite-stiffness idealization, never raise it above it). That makes a
+  run's critical speed a conservative **lower bound** on the true dry critical speed:
+  - If the run's critical speed already clears `1.20x` / `1.30x` MCS, the true dry
+    critical speed (rigid bearings) would clear it too - safe to report the rotor as
+    passing the classically-stiff screen.
+  - If the run's critical speed does **not** clear that threshold, that is
+    inconclusive, not a fail - the true (higher) dry value might still clear it. Say
+    the screen is inconclusive from this run and that the true dry (rigid-bearing)
+    value would be needed to settle it - do not report "lateral analysis required" on
+    this basis alone.
+  - Ball-bearing runs sit closer to the true dry value than journal-bearing runs,
+    since rolling-element bearings are typically far stiffer (closer to the
+    infinite-stiffness idealization) than a hydrodynamic oil film - but neither is
+    exact, and the "inconclusive on fail" rule above applies to both.
+* `RunParams`/`RunResult` still have no **maximum allowable continuous speed (MCS)**
+  field - the speed sweep is a start/stop/step range, not an operating-point spec - so
+  Step 1 always needs the user to supply MCS separately; never invent it or substitute
+  the user's stated "operating"/"rated" speed for it.
 * Step 2's natural frequencies and AF, by contrast, **are** exactly what the engine
   already reports (the Campbell sweep and half-power AF), so a Step 2 separation-margin
   question can be answered from a real run once Step 1 has determined it's needed.
 
 ## Sources
 
-* API Standard 610, 8th Edition (August 1995), Section 5.2.4 "Dynamics" and Appendix I
+* API Standard 610, 8th Edition (August 1995), Section 1.4 "Definition of Terms"
+  (SS1.4.6-SS1.4.8, critical speed / dry / wet), Section 5.2.4 "Dynamics", and Appendix I
   "Lateral Analysis" - criteria summarized in original words from the source held at
   `knowledge/raw/API 610.pdf`; standard text is not reproduced verbatim and figures 5-1,
   I-1 and I-2 are described, not copied.
+* Mark A. Corbo and Stanley B. Malanoski, "Pump Rotordynamics Made Simple,"
+  *Proceedings of the 15th International Pump Users Symposium* - the Lomakin effect
+  and the physical mechanism behind the wet/dry critical-speed discrepancy in pumps,
+  summarized in original words.
 
 ## Related pages
 
