@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,14 +19,28 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Serve wiki assets (run plots, HTML reports) so run pages render inline in the UI
 app.mount("/wiki-files", StaticFiles(directory=str(wiki_logic.WIKI_DIR)), name="wiki-files")
 
-# OpenAI client for LLM. Guarded so the app (and its tests) can boot in
-# environments where the HTTP client can't be constructed; chat just reports
-# the problem instead of the whole API dying on import.
+# OpenAI-compatible clients for LLM. Guarded so the app (and its tests) can
+# boot in environments where the HTTP client can't be constructed; chat just
+# reports the problem instead of the whole API dying on import.
 try:
     client = AsyncOpenAI(base_url=wiki_logic.LLM_BASE_URL, api_key=wiki_logic.LLM_API_KEY)
 except Exception as _e:  # pragma: no cover - environment-specific
     client = None
     _client_error = str(_e)
+
+# Cloud backend for the frontend's local/cloud toggle. Only constructed if
+# the user actually set CLOUD_LLM_API_KEY - no default key, ever. Same
+# OpenAI-compatible wire protocol as the local client, so nothing in
+# agent.py needs to know which one it's talking to.
+cloud_client = None
+_cloud_client_error = "CLOUD_LLM_API_KEY is not set"
+if wiki_logic.CLOUD_LLM_API_KEY:
+    try:
+        cloud_client = AsyncOpenAI(base_url=wiki_logic.CLOUD_LLM_BASE_URL,
+                                   api_key=wiki_logic.CLOUD_LLM_API_KEY)
+    except Exception as _e:  # pragma: no cover - environment-specific
+        cloud_client = None
+        _cloud_client_error = str(_e)
 
 class ChatMessage(BaseModel):
     role: str
@@ -35,11 +49,23 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[ChatMessage]
+    mode: Literal["local", "cloud"] = "local"
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     with open(STATIC_DIR / "index.html", "r", encoding="utf-8") as f:
         return f.read()
+
+@app.get("/api/llm-status")
+async def llm_status():
+    """Lets the frontend know whether each chat backend is actually usable,
+    so the local/cloud toggle can disable a mode with no client configured
+    instead of failing only after the user picks it."""
+    return {
+        "local": client is not None,
+        "cloud": cloud_client is not None,
+        "cloud_model": wiki_logic.CLOUD_LLM_MODEL_NAME if cloud_client is not None else None,
+    }
 
 @app.get("/api/pages")
 async def get_pages():
@@ -128,16 +154,28 @@ async def chat_endpoint(request: ChatRequest):
         {"role": "user", "content": user_input},
     ]
 
-    # 5. Stream Completion through the tool-calling agent loop (Phase 3).
+    # 5. Pick the backend the frontend asked for. Same OpenAI-compatible
+    #    protocol either way - agent.py never knows which one it's using.
+    if request.mode == "cloud":
+        active_client, active_model, unavailable_reason = (
+            cloud_client, wiki_logic.CLOUD_LLM_MODEL_NAME, _cloud_client_error)
+    else:
+        active_client, active_model, unavailable_reason = (
+            client, wiki_logic.LLM_MODEL_NAME, globals().get("_client_error"))
+
+    # 6. Stream Completion through the tool-calling agent loop (Phase 3).
     #    run_agent executes search_knowledge / run_rotordynamic_analysis as the
     #    model requests them, then streams the final grounded answer as
     #    newline-delimited JSON events: {"type": "delta"|"replace"|"flag"|"done"|"error", ...}
     async def stream_generator():
-        if client is None:
-            yield json.dumps({"type": "error", "text": f"LLM client unavailable: {_client_error}"}) + "\n"
+        if active_client is None:
+            yield json.dumps({
+                "type": "error",
+                "text": f"{request.mode} LLM unavailable: {unavailable_reason}",
+            }) + "\n"
             return
         try:
-            async for chunk in agent.run_agent(client, messages):
+            async for chunk in agent.run_agent(active_client, messages, model=active_model):
                 yield chunk
         except Exception as e:
             yield json.dumps({"type": "error", "text": str(e)}) + "\n"

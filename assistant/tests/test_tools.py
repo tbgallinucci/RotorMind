@@ -128,6 +128,22 @@ def test_invalid_positions_rejected(tmp_wiki):
             "positions": {"bearing1_m": 0.5, "disk_m": 0.2, "bearing2_m": 0.7}})
 
 
+def test_mcs_hz_flows_from_input_to_result_and_report(tmp_wiki):
+    """MCS is an input (so the agent never has to be told it per-question) and
+    must survive into the tool result and the printed run report."""
+    default_run = tools.run_rotordynamic_analysis({"speed": FAST_SPEED})
+    assert default_run.mcs_hz == 60.0
+
+    custom_run = tools.run_rotordynamic_analysis({"speed": FAST_SPEED, "mcs_hz": 50.0})
+    assert custom_run.mcs_hz == 50.0
+    assert "MCS (maximum allowable continuous speed): 50.0 Hz" in custom_run.summary
+
+    page_id = custom_run.report_slug.rsplit("/", 1)[-1]
+    md = (tmp_wiki / "runs" / f"{page_id}.md").read_text(encoding="utf-8")
+    assert "MCS (max. continuous speed) | 50.0 Hz" in md
+    assert "NEW pump" in md
+
+
 def test_summary_discloses_assumed_defaults(tmp_wiki):
     r = tools.run_rotordynamic_analysis({"shaft": {"diameter_m": 0.020}, "speed": FAST_SPEED})
     assert "shaft.diameter_m=0.02" in r.summary

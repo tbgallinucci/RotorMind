@@ -70,6 +70,9 @@ def _apply_params(analysis: RotordynamicAnalysis, p: RunParams) -> None:
     piecewise-linearly so the bearing-1, disk, and bearing-2 nodes land exactly
     on the requested stations.
     """
+    # Operating spec
+    analysis.mcs_hz = p.mcs_hz
+
     # Shaft / material
     analysis.E = p.shaft.youngs_modulus_pa
     analysis.rho = p.shaft.density_kg_m3
@@ -212,8 +215,8 @@ def run_rotordynamic_analysis(params: dict[str, Any] | RunParams | None = None) 
     first = f"{crit[0]:.1f} rad/s ({crit[0] / (2 * np.pi):.1f} Hz)" if crit else "n/a"
     description = (
         f"FEA run - {analysis.de * 1e3:.0f} mm x {analysis.le * 1e3:.0f} mm shaft, "
-        f"{analysis.md:.2f} kg disk, {analysis.bearing1_type}/{analysis.bearing2_type} bearings; "
-        f"first critical speed {first}."
+        f"{analysis.md:.2f} kg disk, {analysis.bearing1_type}/{analysis.bearing2_type} bearings, "
+        f"MCS {analysis.mcs_hz:.1f} Hz; first critical speed {first}."
     )
     _add_index_row(page_id, description)
 
@@ -222,17 +225,22 @@ def run_rotordynamic_analysis(params: dict[str, Any] | RunParams | None = None) 
             f"User-specified parameters: {'; '.join(provided)}. "
             "ALL OTHER parameters used the reference test-rig defaults "
             "(13 mm x 747 mm steel shaft, 2.3 kg disk, journal bearings, "
-            "90 um clearance) - state this to the user."
+            "90 um clearance, 60 Hz MCS) - state this to the user."
         )
     else:
         assumptions = (
             "No parameters were specified - the ENTIRE run used the reference "
             "test-rig defaults (13 mm x 747 mm steel shaft, 2.3 kg disk, "
-            "journal bearings, 90 um clearance) - state this to the user."
+            "journal bearings, 90 um clearance, 60 Hz MCS) - state this to the user."
         )
     summary = (
         f"Critical speeds: {', '.join(f'{c:.1f} rad/s' for c in crit) or 'none in range'}. "
         f"Bearing reactions: R1={analysis.FM1:.2f} N, R2={analysis.FM2:.2f} N. "
+        f"MCS (maximum allowable continuous speed): {analysis.mcs_hz:.1f} Hz - use this "
+        f"directly for an API 610 SS5.2.4.1.1 classically-stiff screen, no need to ask "
+        f"the user for it. This is a NEW pump (not identical/similar to an existing "
+        f"qualified pump), so that Step 1 exemption never applies here - go straight to "
+        f"the classically-stiff check. "
         f"{assumptions} "
         f"The full parameter table is on the ingested wiki page '{slug}' "
         f"(cite as '(run: {page_id})')."
@@ -241,6 +249,7 @@ def run_rotordynamic_analysis(params: dict[str, Any] | RunParams | None = None) 
         critical_speeds_rad_s=crit,
         bearing_reactions_n=[float(analysis.FM1), float(analysis.FM2)],
         speed_points=int(analysis.n),
+        mcs_hz=float(analysis.mcs_hz),
         report_slug=slug,
         summary=summary,
     )

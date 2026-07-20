@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RotorMind — the rotordynamics copilot</title>
-    <link rel="stylesheet" href="/static/style.css?v=7">
+    <link rel="stylesheet" href="/static/style.css?v=8">
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -130,6 +130,10 @@
                             <label>Stop [rad/s]<input type="number" step="any" id="rp-wmax" value="2000"></label>
                             <label>Step [rad/s]<input type="number" step="any" id="rp-wstep" value="10"></label>
                         </fieldset>
+                        <fieldset>
+                            <legend><i class="fas fa-gauge-high"></i> Operating spec</legend>
+                            <label>MCS - max. continuous speed [Hz]<input type="number" step="any" id="rp-mcs" value="60"></label>
+                        </fieldset>
                     </div>
                     <div class="run-actions">
                         <button type="submit" id="run-submit"><i class="fas fa-play"></i> Run analysis &amp; ingest report</button>
@@ -148,6 +152,14 @@
                     <i class="fas fa-fan"></i>
                     <span>RotorMind</span>
                 </div>
+                <div class="llm-mode-toggle" id="llm-mode-toggle" title="Which LLM backend answers the chat">
+                    <button class="mode-btn active" data-mode="local" id="mode-local" type="button">
+                        <i class="fas fa-desktop"></i> Local
+                    </button>
+                    <button class="mode-btn" data-mode="cloud" id="mode-cloud" type="button">
+                        <i class="fas fa-cloud"></i> Cloud
+                    </button>
+                </div>
                 <button id="clear-chat" title="Clear History"><i class="fas fa-trash-alt"></i></button>
             </header>
             <div class="chat-history" id="chat-history">
@@ -164,7 +176,7 @@
         </aside>
     </div>
 
-    <script src="/static/script.js?v=8"></script>
-    <script src="/static/run-panel.js?v=6"></script>
+    <script src="/static/script.js?v=9"></script>
+    <script src="/static/run-panel.js?v=7"></script>
 </body>
 </html>

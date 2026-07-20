@@ -371,6 +371,8 @@ def _critical_speed_rows(analysis) -> list[tuple[str, float]]:
 def _parameter_pairs(analysis) -> list[tuple[str, str]]:
     equilibrium = analysis.FM1 + analysis.FM2 - analysis.W
     return [
+        ("MCS (max. continuous speed)",
+         f"{analysis.mcs_hz:.1f} Hz ({analysis.mcs_hz * 60:.0f} RPM)"),
         ("Young's modulus, E", f"{analysis.E / 1e9:.1f} GPa"),
         ("Density, rho", f"{analysis.rho:.0f} kg/m3"),
         ("Shaft diameter, d", f"{analysis.de * 1e3:.1f} mm"),
@@ -510,8 +512,8 @@ def build_wiki_page(analysis, run_id: str | None = None) -> tuple[str, str]:
         "type: Analysis Run",
         f"title: Rotordynamic Analysis {page_id}",
         f"description: FEA run - {analysis.de * 1e3:.0f} mm x {analysis.le * 1e3:.0f} mm shaft, "
-        f"{analysis.md:.2f} kg disk, {analysis.bearing1_type}/{analysis.bearing2_type} bearings; "
-        f"first critical speed {first_crit}.",
+        f"{analysis.md:.2f} kg disk, {analysis.bearing1_type}/{analysis.bearing2_type} bearings, "
+        f"MCS {analysis.mcs_hz:.1f} Hz; first critical speed {first_crit}.",
         "tags: [rotordynamics, fea, simulation-run]",
         f"timestamp: {timestamp}",
         "---",
@@ -519,7 +521,11 @@ def build_wiki_page(analysis, run_id: str | None = None) -> tuple[str, str]:
         "## Overview",
         "",
         f"Finite-element rotordynamic analysis of a shaft-disk-bearing system, executed by the "
-        f"copilot engine (source: engine run {page_id}). Speed range "
+        f"copilot engine (source: engine run {page_id}). This is a NEW pump - not identical or "
+        f"similar to any existing qualified pump, so the API 610 SS5.2.4.1.1 exemption for "
+        f"identical/similar pumps never applies to it; only the classically-stiff screen can "
+        f"exempt it from a lateral analysis. Rated maximum allowable continuous speed (MCS): "
+        f"{analysis.mcs_hz:.1f} Hz ({analysis.mcs_hz * 60:.0f} RPM). Speed range "
         f"{analysis.omega[0]:.0f}-{analysis.omega[-1]:.0f} rad/s over {analysis.n} points, "
         f"with {analysis.bearing1_type} bearing 1 and {analysis.bearing2_type} bearing 2. "
         f"Computed critical speeds: {crit_summary or 'none found in range'}.",

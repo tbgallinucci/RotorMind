@@ -90,6 +90,13 @@ class RunParams(BaseModel):
     positions: PositionParams | None = Field(
         None, description="Optional axial stations; default = reference layout scaled with shaft length")
     speed: SpeedRange = Field(default_factory=SpeedRange)
+    mcs_hz: float = Field(
+        60.0, gt=0,
+        description="Maximum allowable continuous speed (MCS) [Hz] - the pump's rated "
+                    "nameplate operating speed (purchaser/manufacturer spec, not computed "
+                    "by this engine). Recorded with the run so an API 610 SS5.2.4.1.1 "
+                    "classically-stiff screen doesn't need it re-supplied on every question.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -127,6 +134,7 @@ class RunResult(BaseModel):
     critical_speeds_rad_s: list[float] = Field(default_factory=list)
     bearing_reactions_n: list[float] = Field(default_factory=list)
     speed_points: int = 0
+    mcs_hz: float = Field(60.0, description="Maximum allowable continuous speed [Hz] used for this run")
     report_slug: str = Field(
         "",
         description="Slug of the ingested wiki page for this run, e.g. 'runs/2026-07-10-run-001'",

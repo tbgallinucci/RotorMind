@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 from typing import Optional
 import tiktoken
+from dotenv import load_dotenv
 from openai import OpenAI
 
 # ─────────────────────────────────────────────
@@ -13,15 +14,39 @@ WIKI_DIR = BASE_DIR / "wiki"
 RAW_DIR = BASE_DIR / "raw"
 INDEX_FILE = WIKI_DIR / "index.md"
 
+# Load .env from the repo root (BASE_DIR's parent) if present. Never committed
+# (see .gitignore) - this is the only place real API keys should live.
+load_dotenv(BASE_DIR.parent / ".env")
+
 # ─────────────────────────────────────────────
 # LLM Configuration
 # ─────────────────────────────────────────────
 
-# Defaults target a local LM Studio server. Override with environment variables.
-# For Gemini, set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL_NAME (never commit real keys).
+# Defaults target a local LM Studio server. Override with environment variables
+# (or a .env file - see .env.example) - never commit real keys.
 LLM_BASE_URL   = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
 LLM_API_KEY    = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "qwen2.5-14b-instruct-1m")
+
+# Optional second backend for the frontend's local/cloud toggle. Defaults
+# target OpenAI's real API (the code already speaks its exact protocol), but
+# any OpenAI-compatible endpoint works - e.g. Gemini's compatibility layer
+# (https://generativelanguage.googleapis.com/v1beta/openai/) via a .env
+# override. No default key - CLOUD_LLM_API_KEY must be set by the user; the
+# app runs fine without it, cloud mode just reports itself unavailable (see
+# main.py).
+#
+# Gemini-specific note: its OpenAI-compat layer attaches an opaque
+# "thought_signature" to each tool call (delta.tool_calls[i].extra_content
+# .google.thought_signature) and rejects the follow-up request if that
+# blob isn't echoed back verbatim on the reconstructed assistant message.
+# agent.py's _stream_round/run_agent capture and round-trip it generically
+# (any provider-specific extra_content survives unexamined); no special
+# casing needed here. Discovered by inspecting a raw streamed response
+# directly - it isn't documented for this compatibility layer.
+CLOUD_LLM_BASE_URL   = os.getenv("CLOUD_LLM_BASE_URL", "https://api.openai.com/v1")
+CLOUD_LLM_API_KEY    = os.getenv("CLOUD_LLM_API_KEY")
+CLOUD_LLM_MODEL_NAME = os.getenv("CLOUD_LLM_MODEL_NAME", "gpt-4o-mini")
 
 # Token budget
 MAX_TOTAL_TOKENS   = 8_000

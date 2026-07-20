@@ -76,23 +76,31 @@ You can call tools before answering.
   page that does not exist at all, which fails this answer's grounding check.
 * A simulation run report is cited as (run: ...), NEVER as (wiki: ...) — it is
   not a wiki page even though it happens to live in the same wiki folder.
+* EVERY rotor analyzed by run_rotordynamic_analysis is a NEW pump — never
+  identical or similar to an existing qualified pump. The API 610
+  SS5.2.4.1.1 exemption for identical/similar pumps NEVER applies to a run
+  in this project; the only possible exemption is the classically-stiff
+  screen below.
+* Every run now carries its own MCS (maximum allowable continuous speed,
+  in Hz) as a stored input/output — it's in the tool result's summary and
+  printed in the run's wiki page ("MCS (max. continuous speed)" parameter
+  row). Read it FROM the run; never ask the user for it or invent a value
+  for a run that already has one.
 * "IS A LATERAL ANALYSIS REQUIRED" questions (API 610 SS5.2.4.1.1): retrieve
   the api-610-lateral-analysis page and get the exact margin multiplier FROM
   IT — do not state it from memory, and do not restate it without citing
   (wiki: api-610-lateral-analysis, Section) on the sentence that gives it.
-  The comparison is the rotor's DRY critical speed against that margin
-  applied to the pump's MAXIMUM ALLOWABLE CONTINUOUS SPEED (MCS) — both
-  properties of the physical pump, neither of which is a run's speed-sweep
-  range, its "rated"/"operating" speed, or its computed (wet) critical speed.
-  Never substitute the user's stated operating/rated speed for MCS, and never
-  substitute a run's wet critical speed for the dry one — they are different
-  numbers by definition, not interchangeable. If the user hasn't given you
-  both an MCS and a dry critical speed, say plainly that this project's
-  engine does not currently compute a dry critical speed or accept an MCS
-  input, so this question cannot be answered from a run alone — do not
-  invent a substitute comparison using numbers you do have. The margin in the
-  retrieved page is a floor RAISED ABOVE MCS — never compute "MCS minus the
-  margin" as a lowered minimum, and never treat it as a two-sided band.
+  The comparison is a critical speed against that margin applied to the
+  run's own MCS. The margin is a floor RAISED ABOVE MCS — never compute
+  "MCS minus the margin" as a lowered minimum, and never treat it as a
+  two-sided band. The engine reports a WET critical speed (real, finite
+  bearing stiffness), not the standard's idealized (infinite-stiffness)
+  DRY one — per api-610-lateral-analysis, the run's critical speed is a
+  conservative LOWER BOUND on the true dry value, so: if it already clears
+  the margin above MCS, the rotor safely passes the classically-stiff
+  screen; if it does NOT clear the margin, that is inconclusive (not a
+  fail) — say so, don't declare a lateral analysis required on that basis
+  alone.
 * NUMERIC REQUIREMENTS: never state a threshold, percentage, limit, or required
   margin unless that exact figure appears in the retrieved context. If a
   compliance question needs a criterion the context does not contain, say the
@@ -191,7 +199,8 @@ async def _stream_round(client, convo, model, tools, temperature, max_tokens,
             saw_tool_calls = True
             for call_delta in tc:
                 idx = getattr(call_delta, "index", 0)
-                slot = tool_calls_acc.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+                slot = tool_calls_acc.setdefault(
+                    idx, {"id": None, "name": None, "arguments": "", "extra_content": None})
                 if getattr(call_delta, "id", None):
                     slot["id"] = call_delta.id
                 fn = getattr(call_delta, "function", None)
@@ -200,6 +209,16 @@ async def _stream_round(client, convo, model, tools, temperature, max_tokens,
                         slot["name"] = fn.name
                     if getattr(fn, "arguments", None):
                         slot["arguments"] += fn.arguments
+                # Gemini's OpenAI-compat layer attaches a "thought_signature"
+                # here (under extra_content.google) when its thinking feature
+                # is on, and REQUIRES that exact blob echoed back verbatim on
+                # the tool-result follow-up round, or it rejects the request
+                # with "Function call is missing a thought_signature" - it's
+                # opaque to us, so we just round-trip it unexamined. Other
+                # providers never send this field, so this stays None there.
+                extra = getattr(call_delta, "extra_content", None)
+                if extra is not None:
+                    slot["extra_content"] = extra
             continue
 
         text = getattr(delta, "content", None)
@@ -236,10 +255,18 @@ async def run_agent(
     model: str | None = None,
     max_tool_rounds: int = 4,
     temperature: float = 0.1,
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
 ) -> AsyncIterator[str]:
     """Yield SSE-style JSON-line events, executing tool calls as the model
     requests them and streaming the final answer token-by-token.
+
+    max_tokens defaults higher than a first guess might suggest: a broad
+    question (e.g. "which of my saved runs need X") can legitimately need a
+    long, per-run enumeration, and providers with an always-on "thinking"
+    step (e.g. Gemini's 3.x models) spend part of this same budget on
+    invisible reasoning before any visible text comes out - 2048 was
+    measured to truncate a real 18-run enumeration mid-answer on such a
+    provider; 4096 did not.
 
     `client` is any AsyncOpenAI-compatible client (chat.completions.create).
     """
@@ -266,6 +293,10 @@ async def run_agent(
                     "id": c["id"] or f"call_{i}",
                     "type": "function",
                     "function": {"name": c["name"], "arguments": c["arguments"]},
+                    # Round-trip Gemini's thought_signature verbatim if this
+                    # call carried one (see the capture site in _stream_round);
+                    # omitted entirely for providers that never send it.
+                    **({"extra_content": c["extra_content"]} if c.get("extra_content") else {}),
                 }
                 for i, c in enumerate(calls)
             ],

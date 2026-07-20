@@ -25,7 +25,10 @@ class RotordynamicAnalysis:
         self.E = 207e9      # modulus of elasticity (Pa)
         self.rho = 7850     # density (kg/m³)
         self.g = 9.81       # gravity (m/s²)
-        
+
+        # Operating spec (purchaser/manufacturer nameplate value, not computed here)
+        self.mcs_hz = 60.0  # maximum allowable continuous speed [Hz]
+
         # Shaft geometry
         self.de = 13e-3     # Diameter [m]
         self.Ae = (np.pi * self.de**2) / 4      # Area [m²]

@@ -19,6 +19,7 @@ dependencies = [
     "openai",
     "tiktoken",
     "pydantic>=2",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

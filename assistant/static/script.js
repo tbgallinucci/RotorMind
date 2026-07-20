@@ -17,12 +17,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageSearchCount = document.getElementById('page-search-count');
     const pageSearchPrev = document.getElementById('page-search-prev');
     const pageSearchNext = document.getElementById('page-search-next');
+    const modeLocalBtn = document.getElementById('mode-local');
+    const modeCloudBtn = document.getElementById('mode-cloud');
 
     let treeData = [];
     let history = [];
     let activePage = '';
     let currentMatches = [];
     let currentMatchIndex = -1;
+    let llmMode = localStorage.getItem('rotormind-llm-mode') || 'local';
 
     // Initialize Marked.js
     marked.setOptions({
@@ -228,6 +231,38 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Local/Cloud LLM toggle
+    function setLlmMode(mode) {
+        llmMode = mode;
+        localStorage.setItem('rotormind-llm-mode', mode);
+        modeLocalBtn.classList.toggle('active', mode === 'local');
+        modeCloudBtn.classList.toggle('active', mode === 'cloud');
+    }
+
+    async function initLlmModeToggle() {
+        modeLocalBtn.onclick = () => setLlmMode('local');
+        modeCloudBtn.onclick = () => setLlmMode('cloud');
+        try {
+            const response = await fetch('/api/llm-status');
+            const status = await response.json();
+            if (!status.cloud) {
+                modeCloudBtn.disabled = true;
+                modeCloudBtn.title = 'Cloud mode unavailable: no CLOUD_LLM_API_KEY configured on the server';
+                if (llmMode === 'cloud') llmMode = 'local';
+            } else {
+                modeCloudBtn.title = `Cloud mode: ${status.cloud_model}`;
+            }
+            if (!status.local) {
+                modeLocalBtn.disabled = true;
+                modeLocalBtn.title = 'Local mode unavailable: LM Studio client not configured';
+                if (llmMode === 'local') llmMode = 'cloud';
+            }
+        } catch (error) {
+            console.error('Could not fetch LLM status:', error);
+        }
+        setLlmMode(llmMode);
+    }
+
     // Chat Logic
     async function sendMessage() {
         const message = chatInput.value.trim();
@@ -248,7 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, history })
+                body: JSON.stringify({ message, history, mode: llmMode })
             });
 
             if (!response.ok) throw new Error('Chat API failed');
@@ -558,6 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
     syncThemeIcon();
 
     loadPages();
+    initLlmModeToggle();
 
     // Expose for the FEA run panel (run-panel.js)
     window.copilotUI = { loadPages, loadPage };

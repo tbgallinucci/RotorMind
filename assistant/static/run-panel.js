@@ -89,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 stop_rad_s: num('rp-wmax'),
                 step_rad_s: num('rp-wstep'),
             },
+            mcs_hz: num('rp-mcs'),
         };
         if (posCheck.checked) {
             params.positions = {

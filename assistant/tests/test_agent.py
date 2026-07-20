@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from assistant.app import agent, main, tools, wiki_logic
 from assistant.tests.streaming_fakes import (
-    _NonStreamResponse, content_stream, content_then_tool_call_stream, tool_call_stream,
+    content_stream, content_then_tool_call_stream, tool_call_stream,
 )
 
 
@@ -122,6 +122,36 @@ def test_numeric_question_runs_fea_and_cites_both_sources(tmp_wiki):
     assert delta_events > 1, "final answer should stream in multiple chunks, not one blob"
 
 
+def test_provider_specific_tool_call_metadata_is_round_tripped(tmp_wiki):
+    """Gemini's OpenAI-compat layer attaches a "thought_signature" blob to
+    each tool call (under delta.tool_calls[i].extra_content.google) and
+    rejects the follow-up request if that exact blob isn't echoed back on
+    the reconstructed assistant message - a real incident hit while wiring
+    up the cloud toggle. We treat it as opaque and just round-trip it."""
+    signature_blob = {"google": {"thought_signature": "opaque-base64-blob"}}
+
+    class GeminiLikeLLM:
+        def __init__(self):
+            self.calls = []
+            self.chat = self
+            self.completions = self
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            messages = kwargs["messages"]
+            if not any(m.get("role") == "tool" for m in messages):
+                return tool_call_stream("search_knowledge", json.dumps({"query": "x"}),
+                                        extra_content=signature_blob)
+            return content_stream("done")
+
+    llm = GeminiLikeLLM()
+    _collect(agent.run_agent(llm, [{"role": "user", "content": "hi"}]))
+
+    second_call_messages = llm.calls[1]["messages"]
+    assistant_msg = next(m for m in second_call_messages if m.get("role") == "assistant")
+    assert assistant_msg["tool_calls"][0]["extra_content"] == signature_blob
+
+
 def test_tool_errors_are_fed_back_not_raised(tmp_wiki):
     out = agent._execute_tool_call("run_rotordynamic_analysis",
                                    json.dumps({"shaft": {"diameter_m": -5}}))
@@ -225,3 +255,60 @@ def test_api_chat_streams_agent_answer(tmp_wiki, monkeypatch):
     assert resp.status_code == 200
     answer = _reconstruct([resp.text])
     assert "(run: " in answer and "(wiki: " in answer
+
+
+def test_chat_mode_routes_to_the_right_backend(tmp_wiki, monkeypatch):
+    """The local/cloud toggle picks a different client and model, but the
+    request shape and streaming protocol are identical either way - agent.py
+    never needs to know which backend it's talking to."""
+    class TaggedLLM:
+        def __init__(self, tag):
+            self.tag = tag
+            self.calls = []
+            self.chat = self
+            self.completions = self
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return content_stream(f"answered by {self.tag} using {kwargs['model']}")
+
+    local_llm = TaggedLLM("local")
+    cloud_llm = TaggedLLM("cloud")
+    monkeypatch.setattr(main, "client", local_llm)
+    monkeypatch.setattr(main, "cloud_client", cloud_llm)
+    monkeypatch.setattr(wiki_logic, "LLM_MODEL_NAME", "local-model")
+    monkeypatch.setattr(wiki_logic, "CLOUD_LLM_MODEL_NAME", "gpt-4o-mini")
+
+    with TestClient(main.app) as tc:
+        local_resp = tc.post("/api/chat", json={"message": "hi", "history": []})
+        cloud_resp = tc.post("/api/chat", json={"message": "hi", "history": [], "mode": "cloud"})
+
+    assert "answered by local using local-model" in _reconstruct([local_resp.text])
+    assert "answered by cloud using gpt-4o-mini" in _reconstruct([cloud_resp.text])
+    assert len(local_llm.calls) == 1 and len(cloud_llm.calls) == 1, (
+        "each mode must only ever call its own backend"
+    )
+
+
+def test_chat_mode_reports_a_clear_error_when_the_backend_is_unconfigured(tmp_wiki, monkeypatch):
+    monkeypatch.setattr(main, "cloud_client", None)
+    monkeypatch.setattr(main, "_cloud_client_error", "CLOUD_LLM_API_KEY is not set")
+
+    with TestClient(main.app) as tc:
+        resp = tc.post("/api/chat", json={"message": "hi", "history": [], "mode": "cloud"})
+
+    events = [json.loads(s) for s in resp.text.splitlines() if s.strip()]
+    assert events == [{"type": "error", "text": "cloud LLM unavailable: CLOUD_LLM_API_KEY is not set"}]
+
+
+def test_llm_status_reflects_backend_availability(monkeypatch):
+    class Stub:
+        pass
+
+    monkeypatch.setattr(main, "client", Stub())
+    monkeypatch.setattr(main, "cloud_client", None)
+
+    with TestClient(main.app) as tc:
+        resp = tc.get("/api/llm-status")
+
+    assert resp.json() == {"local": True, "cloud": False, "cloud_model": None}

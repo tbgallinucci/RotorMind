@@ -24,27 +24,23 @@ class _Chunk:
         self.choices = [types.SimpleNamespace(delta=delta)]
 
 
-class _NonStreamResponse:
-    """Shape returned for stream=False calls (used only by the one-shot
-    self-correction request in agent._vet_and_finalize)."""
-    def __init__(self, content):
-        self.choices = [types.SimpleNamespace(
-            message=types.SimpleNamespace(content=content, tool_calls=None))]
-
-
 async def content_stream(text: str, chunk_size: int = 12):
     """Fake stream of content-only chunks for a final-answer round."""
     for i in range(0, len(text), chunk_size):
         yield _Chunk(_Delta(content=text[i:i + chunk_size]))
 
 
-async def tool_call_stream(name: str, arguments_json: str, call_id: str = "call_1"):
+async def tool_call_stream(name: str, arguments_json: str, call_id: str = "call_1",
+                           extra_content: dict | None = None):
     """Fake stream for a tool-call round: name arrives on chunk 1 (empty
-    arguments), the arguments JSON arrives as fragment(s) after."""
-    yield _Chunk(_Delta(tool_calls=[
-        types.SimpleNamespace(index=0, id=call_id,
-                              function=types.SimpleNamespace(name=name, arguments=""))
-    ]))
+    arguments), the arguments JSON arrives as fragment(s) after.
+    `extra_content` mimics Gemini's thought_signature blob when given -
+    real providers attach it as a sibling of id/function on the first chunk."""
+    first_call = types.SimpleNamespace(index=0, id=call_id,
+                                       function=types.SimpleNamespace(name=name, arguments=""))
+    if extra_content is not None:
+        first_call.extra_content = extra_content
+    yield _Chunk(_Delta(tool_calls=[first_call]))
     mid = max(1, len(arguments_json) // 2)
     for frag in (arguments_json[:mid], arguments_json[mid:]):
         if frag:
