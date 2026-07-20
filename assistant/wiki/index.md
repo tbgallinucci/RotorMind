@@ -21,6 +21,12 @@
 * [Rotordynamics Glossary](rotordynamics-glossary.md) - Working definitions: critical speed, whirl, gyroscopic effect, unbalance, eccentricity ratio, stiffness and damping coefficients, mode shape, FRF, amplification factor, separation margin.
 
 ## Runs / 2026-07-19
+* [Rotordynamic Analysis 2026-07-19-run-003](runs/2026-07-19-run-003.md) - FEA run - 13 mm x 747 mm shaft, 6.00 kg disk, journal/journal bearings, MCS 60.0 Hz; first critical speed 103.3 rad/s (16.4 Hz).
 * [Rotordynamic Analysis 2026-07-19-run-002](runs/2026-07-19-run-002.md) - FEA run - 13 mm x 747 mm shaft, 5.00 kg disk, journal/journal bearings, MCS 60.0 Hz; first critical speed 113.4 rad/s (18.0 Hz).
 
 * [Rotordynamic Analysis 2026-07-19-run-001](runs/2026-07-19-run-001.md) - FEA run - 13 mm x 747 mm shaft, 4.00 kg disk, journal/journal bearings, MCS 60.0 Hz; first critical speed 120.5 rad/s (19.2 Hz).
+
+## Runs / 2026-07-20
+* [Rotordynamic Analysis 2026-07-20-run-002](runs/2026-07-20-run-002.md) - FEA run - 25 mm x 747 mm shaft, 2.00 kg disk, journal/journal bearings, MCS 60.0 Hz; first critical speed 492.5 rad/s (78.4 Hz).
+
+* [Rotordynamic Analysis 2026-07-20-run-001](runs/2026-07-20-run-001.md) - FEA run - 70 mm x 747 mm shaft, 2.00 kg disk, journal/journal bearings, MCS 60.0 Hz; first critical speed 139.4 rad/s (22.2 Hz).

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from engine.rotordynamics.analysis import RotordynamicAnalysis
-from engine.rotordynamics.report import build_report, build_wiki_page
+from engine.rotordynamics.report import api610_screen, build_report, build_wiki_page
 
 
 @pytest.fixture(scope="module")
@@ -76,3 +76,53 @@ def test_wiki_page_first_critical_is_physical(analysis):
     """The default rig's first critical speed is known to sit near 160 rad/s."""
     first = float(analysis.critical_speeds[0])
     assert 100.0 < first < 260.0
+
+
+# ----------------------------------------------------------------------
+# API 610 classically-stiff screen — the arithmetic the LLM must never do.
+# A real incident had the chat model conclude "no lateral analysis required"
+# for rotors whose first critical sat far BELOW the 1.2x MCS floor; these
+# tests pin the verdict polarity deterministically.
+# ----------------------------------------------------------------------
+
+def test_screen_below_floor_is_inconclusive_never_a_pass():
+    s = api610_screen(first_critical_hz=19.2, mcs_hz=60.0)
+    assert s["verdict"] == "INCONCLUSIVE"
+    assert s["wet_floor_hz"] == pytest.approx(72.0)
+    assert s["dry_floor_hz"] == pytest.approx(78.0)
+    assert s["clears_wet"] is False and s["clears_dry"] is False
+    # the summary must carry the anti-inversion instruction verbatim
+    assert "BELOW" in s["summary"]
+    assert "no lateral analysis required" in s["summary"]  # as a prohibition
+    assert "NOT a pass" in s["summary"]
+
+
+def test_screen_above_wet_floor_only_passes_wet_basis():
+    s = api610_screen(first_critical_hz=75.0, mcs_hz=60.0)  # 72 <= 75 < 78
+    assert s["verdict"] == "PASSES (wet-running-only basis)"
+    assert s["clears_wet"] is True and s["clears_dry"] is False
+    assert "inconclusive" in s["summary"]  # the run-dry basis stays open
+
+
+def test_screen_above_both_floors_passes_both():
+    s = api610_screen(first_critical_hz=90.0, mcs_hz=60.0)
+    assert s["verdict"] == "PASSES"
+    assert s["clears_wet"] is True and s["clears_dry"] is True
+    assert "no lateral analysis required" in s["summary"]
+
+
+def test_screen_without_critical_speed_is_not_evaluated():
+    s = api610_screen(first_critical_hz=None, mcs_hz=60.0)
+    assert s["verdict"] == "NOT EVALUATED"
+    assert s["clears_wet"] is None and s["clears_dry"] is None
+
+
+def test_wiki_page_carries_precomputed_screen_section(analysis):
+    """The default rig (first critical ~25 Hz, MCS 60 Hz) sits below the
+    72 Hz floor -> the page must print the INCONCLUSIVE verdict, spelled
+    out, so the chat model quotes instead of computing."""
+    _slug, md = build_wiki_page(analysis, run_id="run-test")
+    assert "## API 610 Classically-Stiff Screen (SS5.2.4.1.1)" in md
+    assert "**Screen verdict: INCONCLUSIVE (both bases).**" in md
+    assert "| Wet-running-only floor = 1.20 x MCS | 72.0 Hz |" in md
+    assert "floor NOT cleared" in md

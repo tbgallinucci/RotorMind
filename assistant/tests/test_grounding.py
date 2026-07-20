@@ -127,6 +127,37 @@ def test_ignores_numbers_inside_citation_tokens():
     assert grounding.find_violations(answer, pages) == []
 
 
+def test_flags_fabricated_run_ids_even_when_uncited():
+    """Real incident: asked to enumerate saved runs, the model invented five
+    runs (ids copied from the prompt's format example) each with a fabricated
+    screen 'verdict' — in headings and code blocks, no (wiki:/run:) citation
+    anywhere, so the sentence-level numeric check never looked at them. A
+    mentioned run either exists or was made up; every id is checked."""
+    def loader(slug):
+        real = ("2026-07-19-run-001", "runs/2026-07-19-run-001")
+        return "# Rotordynamic Analysis run page" if slug in real else None
+
+    answer = (
+        "### Run: 2026-07-10-run-004\n"
+        "```\nVerdict: PASSES\n```\n"
+        "The real one is 2026-07-19-run-001, whose page exists."
+    )
+    problems = grounding.find_violations(answer, {}, loader=loader)
+    assert any("2026-07-10-run-004" in p and "no such run" in p for p in problems)
+    assert not any("2026-07-19-run-001" in p for p in problems)
+
+
+def test_run_id_seen_in_retrieved_context_is_not_flagged():
+    pages = {"2026-07-19-run-002": "## Critical Speeds\n| 1st | 113.4 |"}
+    answer = "Run 2026-07-19-run-002 is inconclusive on the screen."
+    assert grounding.find_violations(answer, pages, loader=lambda s: None) == []
+
+
+def test_run_id_check_stays_silent_without_a_loader():
+    answer = "Run 2026-07-10-run-004 passes."
+    assert grounding.find_violations(answer, {}, loader=None) == []
+
+
 # --------------------------------------------------- integration (run_agent)
 
 CONTEXT = (

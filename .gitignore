@@ -8,3 +8,9 @@ venv/
 
 # local git helper scripts (not for the repo)
 git-tools/
+
+# vector-RAG embedding cache (rebuilt on demand; see docs/rag-vetorial.md)
+assistant/wiki/.vector_cache/
+
+# pytest cache
+.pytest_cache/

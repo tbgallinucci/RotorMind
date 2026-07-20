@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageSearchNext = document.getElementById('page-search-next');
     const modeLocalBtn = document.getElementById('mode-local');
     const modeCloudBtn = document.getElementById('mode-cloud');
+    const ragLexicalBtn = document.getElementById('rag-lexical');
+    const ragVectorBtn = document.getElementById('rag-vector');
 
     let treeData = [];
     let history = [];
@@ -26,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentMatches = [];
     let currentMatchIndex = -1;
     let llmMode = localStorage.getItem('rotormind-llm-mode') || 'local';
+    let ragMode = localStorage.getItem('rotormind-rag-mode') || 'lexical';
 
     // Initialize Marked.js
     marked.setOptions({
@@ -263,6 +266,35 @@ document.addEventListener('DOMContentLoaded', () => {
         setLlmMode(llmMode);
     }
 
+    // Lexical/Vector retrieval toggle (same pattern as the LLM toggle: the
+    // backend reports availability, the UI disables what can't be used)
+    function setRagMode(mode) {
+        ragMode = mode;
+        localStorage.setItem('rotormind-rag-mode', mode);
+        ragLexicalBtn.classList.toggle('active', mode === 'lexical');
+        ragVectorBtn.classList.toggle('active', mode === 'vector');
+    }
+
+    async function initRagModeToggle() {
+        ragLexicalBtn.onclick = () => setRagMode('lexical');
+        ragVectorBtn.onclick = () => setRagMode('vector');
+        try {
+            const response = await fetch('/api/rag-status');
+            const status = await response.json();
+            if (!status.vector) {
+                ragVectorBtn.disabled = true;
+                ragVectorBtn.title = 'Vector retrieval unavailable: ' +
+                    (status.reason || 'embedding backend not installed');
+                if (ragMode === 'vector') ragMode = 'lexical';
+            } else {
+                ragVectorBtn.title = `Vector retrieval: ${status.embedding_model}`;
+            }
+        } catch (error) {
+            console.error('Could not fetch RAG status:', error);
+        }
+        setRagMode(ragMode);
+    }
+
     // Chat Logic
     async function sendMessage() {
         const message = chatInput.value.trim();
@@ -283,7 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, history, mode: llmMode })
+                body: JSON.stringify({ message, history, mode: llmMode, rag: ragMode })
             });
 
             if (!response.ok) throw new Error('Chat API failed');
@@ -335,6 +367,22 @@ document.addEventListener('DOMContentLoaded', () => {
                             + 'Could not verify against the cited source: '
                             + escapeHtml(evt.text || '');
                         chatHistory.scrollTop = chatHistory.scrollHeight;
+                    } else if (evt.type === 'meta') {
+                        // Server declares which retriever ACTUALLY built this
+                        // turn's context (a vector request can silently degrade
+                        // to lexical) — surfaced as a badge so the mode is
+                        // provable, not guessed from behaviour.
+                        let badge = assistantMsgDiv.querySelector('.retrieval-badge');
+                        if (!badge) {
+                            badge = document.createElement('div');
+                            badge.className = 'retrieval-badge';
+                            assistantMsgDiv.appendChild(badge);
+                        }
+                        const ragIcon = evt.rag === 'vector' ? 'fa-diagram-project' : 'fa-font';
+                        const llmIcon = evt.llm === 'cloud' ? 'fa-cloud' : 'fa-desktop';
+                        badge.innerHTML =
+                            `<span><i class="fas ${ragIcon}"></i> ${escapeHtml(evt.rag)} retrieval</span>` +
+                            `<span><i class="fas ${llmIcon}"></i> ${escapeHtml(evt.llm)} LLM</span>`;
                     } else if (evt.type === 'error') {
                         displayed = evt.text || 'Error communicating with AI assistant.';
                         contentDiv.innerHTML = escapeHtml(displayed);
@@ -594,6 +642,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     loadPages();
     initLlmModeToggle();
+    initRagModeToggle();
 
     // Expose for the FEA run panel (run-panel.js)
     window.copilotUI = { loadPages, loadPage };

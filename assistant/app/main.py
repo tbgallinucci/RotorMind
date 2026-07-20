@@ -3,12 +3,13 @@ import json
 from pathlib import Path
 from typing import List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from engine.rotordynamics.schema import RunParams, RunResult
-from . import agent, tools, wiki_logic
+from . import agent, tools, wiki_logic, wiki_vector
 
 app = FastAPI(title="RotorMind — Rotordynamics Copilot")
 
@@ -50,6 +51,11 @@ class ChatRequest(BaseModel):
     message: str
     history: List[ChatMessage]
     mode: Literal["local", "cloud"] = "local"
+    # Retrieval backend for this turn (the frontend's Lexical/Vector toggle).
+    # "vector" silently degrades to "lexical" when the optional embedding
+    # dependency isn't installed - the UI disables the toggle in that case,
+    # but a direct API caller shouldn't get an error for asking.
+    rag: Literal["lexical", "vector"] = "lexical"
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
@@ -65,6 +71,19 @@ async def llm_status():
         "local": client is not None,
         "cloud": cloud_client is not None,
         "cloud_model": wiki_logic.CLOUD_LLM_MODEL_NAME if cloud_client is not None else None,
+    }
+
+@app.get("/api/rag-status")
+async def rag_status():
+    """Same contract as /api/llm-status, for the Lexical/Vector retrieval
+    toggle: tells the frontend whether the vector backend is usable so it can
+    disable the option (with the reason as a tooltip) instead of letting the
+    user pick a mode that would only ever fall back."""
+    ok, reason = wiki_vector.availability()
+    return {
+        "vector": ok,
+        "embedding_model": wiki_vector.EMBEDDING_MODEL_NAME if ok else None,
+        "reason": reason,
     }
 
 @app.get("/api/pages")
@@ -129,10 +148,27 @@ async def chat_endpoint(request: ChatRequest):
     
     # 1. Load Index
     index = wiki_logic.load_wiki_index()
-    
-    # 2. Build Context (cheap keyword retrieval up front; the agent can pull
-    #    more via the search_knowledge tool if this isn't enough)
-    context = wiki_logic.build_context(user_input, index, wiki_logic.CONTEXT_BUDGET)
+
+    # 2. Build Context up front; the agent can pull more via the
+    #    search_knowledge tool if this isn't enough. Which retriever builds it
+    #    follows the frontend's Lexical/Vector toggle. The vector path runs in
+    #    the threadpool because embedding is CPU-bound (and the very first call
+    #    loads the model), which would otherwise stall the event loop; any
+    #    vector failure degrades to lexical, which has no failure modes.
+    # Only probe availability when vector was actually requested - the probe
+    # imports sentence-transformers (and torch), which lexical-only users
+    # should never pay for.
+    rag_mode = ("vector" if request.rag == "vector" and wiki_vector.is_available()
+                else "lexical")
+    if rag_mode == "vector":
+        try:
+            context = await run_in_threadpool(
+                wiki_vector.build_context, user_input, wiki_logic.CONTEXT_BUDGET)
+        except Exception:
+            rag_mode = "lexical"
+            context = wiki_logic.build_context(user_input, index, wiki_logic.CONTEXT_BUDGET)
+    else:
+        context = wiki_logic.build_context(user_input, index, wiki_logic.CONTEXT_BUDGET)
     
     # 3. Trim History
     trimmed_history = wiki_logic.trim_history(history, wiki_logic.HISTORY_TOKENS)
@@ -174,8 +210,16 @@ async def chat_endpoint(request: ChatRequest):
                 "text": f"{request.mode} LLM unavailable: {unavailable_reason}",
             }) + "\n"
             return
+        # First event: declare which backends this turn ACTUALLY used, so the
+        # mode is provable from the wire, not inferred. rag here is the mode
+        # that really built the context - if the vector path was requested but
+        # degraded to lexical (missing extra, runtime failure), this says
+        # "lexical", it never merely echoes the request.
+        yield json.dumps({"type": "meta", "rag": rag_mode, "llm": request.mode}) + "\n"
         try:
-            async for chunk in agent.run_agent(active_client, messages, model=active_model):
+            async for chunk in agent.run_agent(
+                    active_client, messages, model=active_model,
+                    tool_dispatch=tools.make_tool_dispatch(rag_mode)):
                 yield chunk
         except Exception as e:
             yield json.dumps({"type": "error", "text": str(e)}) + "\n"

@@ -144,6 +144,21 @@ def test_mcs_hz_flows_from_input_to_result_and_report(tmp_wiki):
     assert "NEW pump" in md
 
 
+def test_summary_carries_precomputed_api610_screen_verdict(tmp_wiki):
+    """The tool result must hand the model a ready-made screen verdict so it
+    never does the floor comparison itself (the polarity-inversion incident).
+    Default rig: first critical ~25.5 Hz < 72 Hz floor -> INCONCLUSIVE."""
+    r = tools.run_rotordynamic_analysis({"speed": FAST_SPEED})
+    assert "PRECOMPUTED" in r.summary
+    assert "INCONCLUSIVE" in r.summary
+    assert "72.0 Hz floor (1.20 x MCS)" in r.summary
+    # and the ingested page carries the same verdict section
+    page_id = r.report_slug.rsplit("/", 1)[-1]
+    md = (tmp_wiki / "runs" / f"{page_id}.md").read_text(encoding="utf-8")
+    assert "## API 610 Classically-Stiff Screen (SS5.2.4.1.1)" in md
+    assert "**Screen verdict: INCONCLUSIVE (both bases).**" in md
+
+
 def test_summary_discloses_assumed_defaults(tmp_wiki):
     r = tools.run_rotordynamic_analysis({"shaft": {"diameter_m": 0.020}, "speed": FAST_SPEED})
     assert "shaft.diameter_m=0.02" in r.summary

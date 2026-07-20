@@ -25,6 +25,10 @@ dependencies = [
 [project.optional-dependencies]
 ui = ["streamlit>=1.28.0", "pandas>=1.3.0"]  # legacy standalone FEA UI
 dev = ["pytest"]
+# Embedding-based retrieval (the UI's "Vector" toggle). Optional because it
+# pulls in torch (~2 GB); without it the app runs lexical-only and the toggle
+# disables itself.
+vector = ["sentence-transformers>=2.2"]
 
 [tool.setuptools]
 packages = ["engine", "engine.rotordynamics", "assistant", "assistant.app"]

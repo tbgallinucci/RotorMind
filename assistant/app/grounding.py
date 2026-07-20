@@ -8,10 +8,13 @@ from pre-training. Prompt rules lower how often that happens; they cannot
 guarantee it away on a small local model. This module is the deterministic
 backstop that runs between the model and the user.
 
-Rule enforced:
-    For every sentence that carries a (wiki: slug, Section) citation: the
-    slug must resolve to a real page, and every number in that sentence must
-    appear on that page.
+Rules enforced:
+    1. For every sentence that carries a (wiki: slug, Section) citation: the
+       slug must resolve to a real page, and every number in that sentence
+       must appear on that page.
+    2. Every run-id-shaped token anywhere in the answer (cited or not) must
+       resolve to a run page that actually exists - a mentioned run that was
+       never generated is a fabrication regardless of citation hygiene.
 
 Design choices that matter:
 * We check numbers against the page the model *cited*, sourced first from the
@@ -37,6 +40,10 @@ from collections.abc import Callable
 
 _WIKI_CITE = re.compile(r"[(\[]wiki:\s*([^,>)\]]+)\s*[,>]\s*([^)\]]+)[)\]]")
 _RUN_CITE = re.compile(r"[(\[]run:\s*([^)\]]+)[)\]]")
+# Any run-id-shaped token, ANYWHERE in the answer (headings, prose, code
+# blocks, citations alike) - run ids follow a fixed generated pattern, so
+# every mention is a checkable existence claim in its own right.
+_RUN_ID = re.compile(r"\b\d{4}-\d{2}-\d{2}-run-\d{1,4}\b")
 # Splits on sentence-ending punctuation AND on any line break. Markdown
 # answers are full of bullets, headings, and code spans with no terminal
 # "." — without the newline split, an entire multi-line block (e.g. a
@@ -123,6 +130,27 @@ def find_violations(answer: str,
                     problems.append(
                         f"figure '{num}' is cited to '{slug}' but does not appear on that page"
                     )
+
+    # Fabricated run references. Unlike numeric grounding, this applies to
+    # EVERY run-id mention, cited or not: the incident it catches was the
+    # model inventing whole runs - ids copied from the prompt's format
+    # example - each with a fabricated "verdict", none of it carrying a
+    # citation the sentence-level check would ever look at. A run id either
+    # resolves to a page (in this turn's context or on disk) or the run was
+    # made up; there is no third case.
+    for run_id in dict.fromkeys(_RUN_ID.findall(answer)):
+        if run_id in pages or f"runs/{run_id}" in pages:
+            continue
+        if loader is None:
+            continue  # cannot verify either way -> stay silent
+        try:
+            exists = loader(run_id) or loader(f"runs/{run_id}")
+        except Exception:
+            continue
+        if not exists:
+            problems.append(
+                f"run '{run_id}' is referenced but no such run exists in the knowledge base"
+            )
     # de-duplicate, preserve order
     seen: set[str] = set()
     ordered: list[str] = []

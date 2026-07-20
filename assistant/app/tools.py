@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from engine.rotordynamics.analysis import RotordynamicAnalysis
-from engine.rotordynamics.report import build_report, build_wiki_page
+from engine.rotordynamics.report import api610_screen, build_report, build_wiki_page
 from engine.rotordynamics.schema import RunParams, RunResult
 
 from . import wiki_logic, wiki_vector
@@ -245,14 +245,16 @@ def run_rotordynamic_analysis(params: dict[str, Any] | RunParams | None = None) 
             "test-rig defaults (13 mm x 747 mm steel shaft, 2.3 kg disk, "
             "journal bearings, 90 um clearance, 60 Hz MCS) - state this to the user."
         )
+    first_crit_hz = crit[0] / (2 * np.pi) if crit else None
+    screen = api610_screen(first_crit_hz, float(analysis.mcs_hz))
     summary = (
         f"Critical speeds: {', '.join(f'{c:.1f} rad/s' for c in crit) or 'none in range'}. "
         f"Bearing reactions: R1={analysis.FM1:.2f} N, R2={analysis.FM2:.2f} N. "
-        f"MCS (maximum allowable continuous speed): {analysis.mcs_hz:.1f} Hz - use this "
-        f"directly for an API 610 SS5.2.4.1.1 classically-stiff screen, no need to ask "
-        f"the user for it. This is a NEW pump (not identical/similar to an existing "
-        f"qualified pump), so that Step 1 exemption never applies here - go straight to "
-        f"the classically-stiff check. "
+        f"MCS (maximum allowable continuous speed): {analysis.mcs_hz:.1f} Hz. "
+        f"API 610 SS5.2.4.1.1 classically-stiff screen (PRECOMPUTED - quote this "
+        f"verdict verbatim, never redo the comparison yourself): {screen['summary']} "
+        f"This is a NEW pump (not identical/similar to an existing qualified pump), "
+        f"so that Step 1 exemption never applies here. "
         f"{assumptions} "
         f"The full parameter table is on the ingested wiki page '{slug}' "
         f"(cite as '(run: {page_id})')."

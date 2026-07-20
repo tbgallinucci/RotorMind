@@ -133,10 +133,14 @@ answer and an invented one:
     since rolling-element bearings are typically far stiffer (closer to the
     infinite-stiffness idealization) than a hydrodynamic oil film - but neither is
     exact, and the "inconclusive on fail" rule above applies to both.
-* `RunParams`/`RunResult` still have no **maximum allowable continuous speed (MCS)**
-  field - the speed sweep is a start/stop/step range, not an operating-point spec - so
-  Step 1 always needs the user to supply MCS separately; never invent it or substitute
-  the user's stated "operating"/"rated" speed for it.
+* `RunParams`/`RunResult` carry the rotor's **maximum allowable continuous speed
+  (MCS)** as an explicit input (`mcs_hz`, printed on every run page), and every run
+  page also carries a precomputed **"API 610 Classically-Stiff Screen"** section: the
+  engine itself compares the run's first critical speed against the 1.20x/1.30x MCS
+  floors and prints a verdict (PASSES / INCONCLUSIVE / NOT EVALUATED) that already
+  applies the lower-bound logic above in the correct direction. Step-1 answers about
+  a saved run must QUOTE that verdict from the run's page - never re-derive the
+  comparison from the raw numbers.
 * Step 2's natural frequencies and AF, by contrast, **are** exactly what the engine
   already reports (the Campbell sweep and half-power AF), so a Step 2 separation-margin
   question can be answered from a real run once Step 1 has determined it's needed.

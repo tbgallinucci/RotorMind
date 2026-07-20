@@ -160,6 +160,14 @@
                         <i class="fas fa-cloud"></i> Cloud
                     </button>
                 </div>
+                <div class="llm-mode-toggle" id="rag-mode-toggle" title="How wiki context is retrieved for the chat">
+                    <button class="mode-btn active" data-rag="lexical" id="rag-lexical" type="button">
+                        <i class="fas fa-font"></i> Lexical
+                    </button>
+                    <button class="mode-btn" data-rag="vector" id="rag-vector" type="button">
+                        <i class="fas fa-diagram-project"></i> Vector
+                    </button>
+                </div>
                 <button id="clear-chat" title="Clear History"><i class="fas fa-trash-alt"></i></button>
             </header>
             <div class="chat-history" id="chat-history">
@@ -176,7 +184,7 @@
         </aside>
     </div>
 
-    <script src="/static/script.js?v=9"></script>
+    <script src="/static/script.js?v=11"></script>
     <script src="/static/run-panel.js?v=7"></script>
 </body>
 </html>

@@ -485,6 +485,133 @@ def build_report(analysis) -> tuple[str, dict[str, bytes]]:
     return html, plots
 
 
+# ======================================================================
+#  API 610 SS5.2.4.1.1 classically-stiff screen — deterministic verdict
+# ======================================================================
+#
+# The screen is arithmetic (a comparison against a floor raised above MCS),
+# and arithmetic delegated to an LLM is a liability: a real incident had the
+# chat model read a run page, put the numbers on the wrong side of the
+# inequality, and report "no lateral analysis required" for rotors whose
+# first critical sat far BELOW 1.2x MCS. The fix is the same philosophy as
+# the grounding guard: compute the verdict deterministically here, print it
+# on the run page and in the tool result, and instruct the model to QUOTE
+# it rather than re-derive it.
+
+API610_WET_MARGIN = 1.20  # rotors designed for wet running only
+API610_DRY_MARGIN = 1.30  # rotors also designed to run dry
+
+
+def api610_screen(first_critical_hz: float | None, mcs_hz: float) -> dict:
+    """Classically-stiff screen verdict for one run.
+
+    `first_critical_hz` is the run's first critical speed — computed with
+    real, FINITE bearing stiffness, hence a conservative LOWER BOUND on the
+    true dry (rigid-bearing) value the standard defines. That asymmetry sets
+    the verdict semantics:
+      * clears the floor  -> the true dry value clears it too: PASSES.
+      * below the floor   -> INCONCLUSIVE (never "fails", never "passes"):
+                             the true, higher dry value might still clear it.
+
+    Returns a dict with the floors, per-basis outcomes, a one-line `summary`
+    for the tool result, and `markdown_lines` for the run page section.
+    """
+    wet_floor = API610_WET_MARGIN * mcs_hz
+    dry_floor = API610_DRY_MARGIN * mcs_hz
+
+    if first_critical_hz is None:
+        summary = ("NOT EVALUATED - no critical speed found in the swept range, "
+                   "so there is nothing to compare against the screen floors.")
+        markdown = [
+            "## API 610 Classically-Stiff Screen (SS5.2.4.1.1)",
+            "",
+            "**Screen verdict: NOT EVALUATED** - no critical speed was found in the "
+            "swept speed range, so there is no number to compare against the "
+            f"{API610_WET_MARGIN:.2f} x MCS / {API610_DRY_MARGIN:.2f} x MCS floors. "
+            "Extend the sweep before drawing any Step-1 conclusion.",
+        ]
+        return {"first_critical_hz": None, "mcs_hz": mcs_hz,
+                "wet_floor_hz": wet_floor, "dry_floor_hz": dry_floor,
+                "clears_wet": None, "clears_dry": None,
+                "verdict": "NOT EVALUATED", "summary": summary,
+                "markdown_lines": markdown}
+
+    clears_wet = first_critical_hz >= wet_floor
+    clears_dry = first_critical_hz >= dry_floor
+
+    def cmp_row(floor: float, clears: bool) -> str:
+        op = ">=" if clears else "<"
+        outcome = "floor CLEARED" if clears else "floor NOT cleared"
+        return f"{first_critical_hz:.1f} Hz {op} {floor:.1f} Hz -> {outcome}"
+
+    if clears_wet and clears_dry:
+        verdict = "PASSES"
+        verdict_text = (
+            f"**Screen verdict: PASSES the classically-stiff screen on BOTH bases.** "
+            f"This run's first critical speed ({first_critical_hz:.1f} Hz) clears both the "
+            f"{API610_WET_MARGIN:.2f} x MCS floor ({wet_floor:.1f} Hz) and the "
+            f"{API610_DRY_MARGIN:.2f} x MCS floor ({dry_floor:.1f} Hz). Since the run's "
+            f"finite-bearing critical speed is a lower bound on the true dry "
+            f"(rigid-bearing) value, the true dry value clears the floors too - "
+            f"no lateral analysis is required by SS5.2.4.1.1.")
+        summary = (f"PASSES (both bases): first critical {first_critical_hz:.1f} Hz >= "
+                   f"{wet_floor:.1f} Hz (1.20 x MCS) and >= {dry_floor:.1f} Hz "
+                   f"(1.30 x MCS) - no lateral analysis required.")
+    elif clears_wet:
+        verdict = "PASSES (wet-running-only basis)"
+        verdict_text = (
+            f"**Screen verdict: PASSES on the wet-running-only basis.** This run's first "
+            f"critical speed ({first_critical_hz:.1f} Hz) clears the {API610_WET_MARGIN:.2f} x MCS "
+            f"floor ({wet_floor:.1f} Hz), so if the rotor is designed for wet running only, "
+            f"no lateral analysis is required. It does NOT clear the {API610_DRY_MARGIN:.2f} x MCS "
+            f"floor ({dry_floor:.1f} Hz); if the rotor is also designed to run dry, that basis "
+            f"is INCONCLUSIVE from this run (the finite-bearing value is only a lower bound "
+            f"on the true dry critical speed).")
+        summary = (f"PASSES (wet-running-only): first critical {first_critical_hz:.1f} Hz >= "
+                   f"{wet_floor:.1f} Hz (1.20 x MCS); the 1.30 x MCS run-dry basis "
+                   f"({dry_floor:.1f} Hz) is inconclusive.")
+    else:
+        verdict = "INCONCLUSIVE"
+        verdict_text = (
+            f"**Screen verdict: INCONCLUSIVE (both bases).** This run's first critical speed "
+            f"({first_critical_hz:.1f} Hz) sits BELOW the {API610_WET_MARGIN:.2f} x MCS floor "
+            f"({wet_floor:.1f} Hz). Because the run's finite-bearing critical speed is only a "
+            f"lower bound on the true dry (rigid-bearing) value, not clearing the floor is "
+            f"INCONCLUSIVE - the true, higher dry value might still clear it. The correct "
+            f"statement is: \"the classically-stiff screen is inconclusive from this run; the "
+            f"true dry (rigid-bearing) critical speed would be needed to settle it.\" It is "
+            f"WRONG to report \"no lateral analysis required\" for this run, and equally WRONG "
+            f"to report \"lateral analysis required\" from this number alone.")
+        summary = (f"INCONCLUSIVE: first critical {first_critical_hz:.1f} Hz is BELOW the "
+                   f"{wet_floor:.1f} Hz floor (1.20 x MCS) - NOT a pass and NOT a fail; "
+                   f"the true dry (rigid-bearing) value would be needed. Never report "
+                   f"'no lateral analysis required' from this.")
+
+    markdown = [
+        "## API 610 Classically-Stiff Screen (SS5.2.4.1.1)",
+        "",
+        "Deterministic verdict, precomputed by the engine from this run's own numbers. "
+        "QUOTE this verdict as-is - never recompute or reinterpret the comparison. "
+        "Direction reminder: the floor is RAISED ABOVE MCS; a first critical speed "
+        "BELOW the floor can NEVER mean \"no lateral analysis required\".",
+        "",
+        "| Quantity | Value |",
+        "|---|---|",
+        f"| First critical speed (this run; finite bearings -> lower bound on true dry) | {first_critical_hz:.1f} Hz |",
+        f"| MCS (maximum allowable continuous speed) | {mcs_hz:.1f} Hz |",
+        f"| Wet-running-only floor = {API610_WET_MARGIN:.2f} x MCS | {wet_floor:.1f} Hz |",
+        f"| Also-runs-dry floor = {API610_DRY_MARGIN:.2f} x MCS | {dry_floor:.1f} Hz |",
+        f"| Wet-basis comparison | {cmp_row(wet_floor, clears_wet)} |",
+        f"| Dry-basis comparison | {cmp_row(dry_floor, clears_dry)} |",
+        "",
+        verdict_text,
+    ]
+    return {"first_critical_hz": first_critical_hz, "mcs_hz": mcs_hz,
+            "wet_floor_hz": wet_floor, "dry_floor_hz": dry_floor,
+            "clears_wet": clears_wet, "clears_dry": clears_dry,
+            "verdict": verdict, "summary": summary, "markdown_lines": markdown}
+
+
 def build_wiki_page(analysis, run_id: str | None = None) -> tuple[str, str]:
     """Render a finished analysis as a Markdown wiki page.
 
@@ -551,6 +678,10 @@ def build_wiki_page(analysis, run_id: str | None = None) -> tuple[str, str]:
         ]
     else:
         lines.append("| - | no critical speeds found in the analysed range | - | - |")
+
+    first_crit_hz = crit_rows[0][1] / (2 * np.pi) if crit_rows else None
+    screen = api610_screen(first_crit_hz, float(analysis.mcs_hz))
+    lines += ["", *screen["markdown_lines"]]
 
     equilibrium = analysis.FM1 + analysis.FM2 - analysis.W
     lines += [

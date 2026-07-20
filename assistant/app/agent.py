@@ -76,6 +76,13 @@ You can call tools before answering.
   page that does not exist at all, which fails this answer's grounding check.
 * A simulation run report is cited as (run: ...), NEVER as (wiki: ...) — it is
   not a wiki page even though it happens to live in the same wiki folder.
+* NEVER mention a run id you did not see in this turn's retrieved context.
+  Run ids look like 2026-07-10-run-001, but that one is only a FORMAT
+  example — do not repeat it, and never enumerate runs from imagination.
+  For "which of my runs ..." questions, call search_knowledge first and
+  answer ONLY about run pages that actually came back; every run id you
+  write is checked against the knowledge base and a made-up one is flagged
+  to the user as a fabrication.
 * EVERY rotor analyzed by run_rotordynamic_analysis is a NEW pump — never
   identical or similar to an existing qualified pump. The API 610
   SS5.2.4.1.1 exemption for identical/similar pumps NEVER applies to a run
@@ -86,21 +93,27 @@ You can call tools before answering.
   printed in the run's wiki page ("MCS (max. continuous speed)" parameter
   row). Read it FROM the run; never ask the user for it or invent a value
   for a run that already has one.
-* "IS A LATERAL ANALYSIS REQUIRED" questions (API 610 SS5.2.4.1.1): retrieve
-  the api-610-lateral-analysis page and get the exact margin multiplier FROM
-  IT — do not state it from memory, and do not restate it without citing
-  (wiki: api-610-lateral-analysis, Section) on the sentence that gives it.
-  The comparison is a critical speed against that margin applied to the
-  run's own MCS. The margin is a floor RAISED ABOVE MCS — never compute
-  "MCS minus the margin" as a lowered minimum, and never treat it as a
-  two-sided band. The engine reports a WET critical speed (real, finite
-  bearing stiffness), not the standard's idealized (infinite-stiffness)
-  DRY one — per api-610-lateral-analysis, the run's critical speed is a
-  conservative LOWER BOUND on the true dry value, so: if it already clears
-  the margin above MCS, the rotor safely passes the classically-stiff
-  screen; if it does NOT clear the margin, that is inconclusive (not a
-  fail) — say so, don't declare a lateral analysis required on that basis
-  alone.
+* "IS A LATERAL ANALYSIS REQUIRED" questions (API 610 SS5.2.4.1.1): NEVER do
+  the comparison arithmetic yourself. Every run page carries a precomputed
+  "API 610 Classically-Stiff Screen" section, and every run tool result
+  carries the same verdict in its summary — computed deterministically by
+  the engine. QUOTE that verdict (PASSES / INCONCLUSIVE / NOT EVALUATED)
+  and its stated reason verbatim; your only job is to relay it with the
+  run citation. If a run page in your context is missing that section,
+  say the screen verdict is not available for that run — do NOT derive one
+  from its numbers.
+* SCREEN POLARITY — the single most common error, so it is spelled out:
+  the screen floor is RAISED ABOVE MCS (e.g. 1.20 x MCS). A first critical
+  speed BELOW the floor can NEVER mean "no lateral analysis required".
+  Below the floor = INCONCLUSIVE at best (the run's finite-bearing value
+  is only a lower bound on the true dry value — see the run page's screen
+  section). Only a critical speed AT OR ABOVE the floor can ever support
+  "no lateral analysis required". If you find yourself writing "well below
+  the required margin, therefore no lateral analysis is required", STOP —
+  that sentence is self-contradictory and wrong.
+* Still cite (wiki: api-610-lateral-analysis, Section) when you state what
+  the screen rule IS (the 1.20x/1.30x floors, the dry/wet definitions);
+  get those figures from the retrieved page, never from memory.
 * NUMERIC REQUIREMENTS: never state a threshold, percentage, limit, or required
   margin unless that exact figure appears in the retrieved context. If a
   compliance question needs a criterion the context does not contain, say the
@@ -127,9 +140,10 @@ def _tool_result_to_str(result) -> str:
     return str(result)
 
 
-def _execute_tool_call(name: str, arguments: str) -> str:
+def _execute_tool_call(name: str, arguments: str,
+                       dispatch: dict | None = None) -> str:
     """Dispatch one tool call; errors are returned as text so the model can recover."""
-    fn = TOOL_DISPATCH.get(name)
+    fn = (dispatch or TOOL_DISPATCH).get(name)
     if fn is None:
         return f"ERROR: unknown tool '{name}'"
     try:
@@ -256,6 +270,7 @@ async def run_agent(
     max_tool_rounds: int = 4,
     temperature: float = 0.1,
     max_tokens: int = 4096,
+    tool_dispatch: dict | None = None,
 ) -> AsyncIterator[str]:
     """Yield SSE-style JSON-line events, executing tool calls as the model
     requests them and streaming the final answer token-by-token.
@@ -269,6 +284,8 @@ async def run_agent(
     provider; 4096 did not.
 
     `client` is any AsyncOpenAI-compatible client (chat.completions.create).
+    `tool_dispatch` optionally overrides the default tool table (used to bind
+    search_knowledge to the retrieval mode the request asked for).
     """
     model = model or wiki_logic.LLM_MODEL_NAME
     convo = list(messages)
@@ -302,7 +319,7 @@ async def run_agent(
             ],
         })
         for c in calls:
-            result = _execute_tool_call(c["name"], c["arguments"])
+            result = _execute_tool_call(c["name"], c["arguments"], tool_dispatch)
             convo.append({
                 "role": "tool",
                 "tool_call_id": c["id"] or "call_0",

@@ -430,11 +430,15 @@ body {
 }
 
 .chat-header {
-    height: var(--header-height);
-    padding: 0 20px;
+    /* min-height (not height) + wrap: with two mode toggles the header can
+       need a second row when the chat sidebar is dragged narrow */
+    min-height: var(--header-height);
+    padding: 6px 20px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    gap: 4px 8px;
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -491,6 +495,20 @@ body {
 .mode-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+}
+
+/* Per-answer badge: which retriever/LLM actually served this turn (from the
+   stream's `meta` event - the server's declaration, not the toggle state) */
+.retrieval-badge {
+    margin-top: 5px;
+    display: flex;
+    gap: 12px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.retrieval-badge i {
+    margin-right: 4px;
 }
 
 .chat-history {
