@@ -1,0 +1,1017 @@
+diff --git a/assistant/app/agent.py b/assistant/app/agent.py
+index 4f280ee..14c75f6 100644
+--- a/assistant/app/agent.py
++++ b/assistant/app/agent.py
+@@ -1,20 +1,37 @@
+ """
+-Tool-calling loop around the LLM.
++Tool-calling loop around the LLM, with true token-by-token streaming.
+ 
+-Integration points C/D (docs/architecture.md). AlexandrIA's /api/chat used to
+-make a single grounded LLM call; `run_agent` wraps that in a loop:
++Every round is requested with stream=True. As chunks arrive we inspect each
++delta:
++  * if it carries `tool_calls`, this round is a TOOL round — we accumulate the
++    call(s) (name + incrementally-streamed arguments, exactly how providers
++    actually stream function calls) across chunks. Nothing is shown to the
++    user; once the stream ends we execute the tool(s) and loop.
++  * if it carries `content`, this round is the FINAL ANSWER — each token is
++    forwarded immediately as a `delta` event (optimistic display) while we
++    also buffer the full text.
+ 
+-    send messages + TOOL_SCHEMAS
+-      -> while the model requests tool calls, execute them (tools.py),
+-         append the results as tool messages, and continue
+-      -> once the model answers without a tool call, stream the text through
++Once a final-answer round finishes, the buffered text is checked against its
++sources (grounding.find_violations) — the same rule as before: every number in
++a sentence carrying a (wiki: slug, Section) citation must appear on that page.
++Two outcomes:
++  * clean -> emit `done`; what the user already saw stays as-is.
++  * violation -> run ONE non-streaming self-correction, then emit `replace`
++    with the corrected (or FAIL_CLOSED) text, telling the frontend to swap out
++    what it displayed.
+ 
+-Because search_knowledge and run_rotordynamic_analysis both ultimately feed
+-the same wiki, citations are uniform: '(wiki: <slug>, <Section>)' for theory
+-pages and '(run: <page-id>)' for simulation runs the assistant just executed.
++This keeps genuine per-token latency for the common case while still
++guaranteeing nothing ungrounded survives as the *final* displayed answer — the
++trade-off is a brief "flash of the wrong answer, then corrected" UX on the
++(hopefully rare) turns where the model cites a fabricated figure. That flash
++requires frontend support to actually replace a message it already rendered
++(see assistant/static/script.js).
+ 
+-The LLM client is injected (an AsyncOpenAI-compatible object), so tests can
+-pass a mock and no live endpoint is ever required.
++Wire format: every yielded string is one JSON object followed by "\n":
++    {"type": "delta",   "text": "..."}   - append to the displayed answer
++    {"type": "replace", "text": "..."}   - discard what was displayed, show this
++    {"type": "done"}                      - stream finished, nothing to correct
++    {"type": "error",  "text": "..."}    - something went wrong
+ """
+ 
+ from __future__ import annotations
+@@ -24,7 +41,7 @@ from collections.abc import AsyncIterator
+ 
+ from pydantic import BaseModel
+ 
+-from . import wiki_logic
++from . import grounding, wiki_logic
+ from .tools import TOOL_DISPATCH, TOOL_SCHEMAS
+ 
+ # Appended to the base SYSTEM_PROMPT when the agent loop is active.
+@@ -32,13 +49,27 @@ AGENT_PROMPT_SUFFIX = """
+ 
+ TOOLS:
+ You can call tools before answering.
+-* Use `search_knowledge` for theory, standards, glossary, and past-run questions.
++* Use `search_knowledge` for ANY theory, standards, glossary, definition, or
++  past-run question — INCLUDING compliance questions (e.g. "is this compliant
++  to API 684?"). If a question touches a standard or a concept and you have not
++  just retrieved a wiki page about it, call `search_knowledge` FIRST. Never
++  answer a standards/theory/compliance question from your own prior knowledge —
++  only from retrieved wiki context.
+ * Use `run_rotordynamic_analysis` when the user needs computed numbers (critical
+   speeds, bearing reactions, response) for a specific machine. Pass only the
+   parameters the user gave; omitted parameters fall back to the reference rig.
+ * After a simulation, cite its numbers with the run token from the tool result,
+-  e.g. (run: 2026-07-10-run-001). Cite knowledge-base facts as
+-  (wiki: [slug], [Section]). Every numeric claim needs one of the two.
++  e.g. (run: 2026-07-10-run-001). Cite knowledge-base facts — definitions,
++  concepts, standards requirements, and compliance criteria, NOT just numbers —
++  as (wiki: [slug], [Section]). EVERY factual claim taken from the context needs
++  one of the two tokens; naming a standard in prose (e.g. "API 684") is not a
++  citation.
++* NUMERIC REQUIREMENTS: never state a threshold, percentage, limit, or required
++  margin unless that exact figure appears in the retrieved context. If a
++  compliance question needs a criterion the context does not contain, say the
++  criterion is not in the knowledge base and give ONLY the indicative figures
++  that ARE present, each cited. Never supply a figure from general knowledge,
++  and never attach a (wiki: ...) tag to a number you did not read on that page.
+ * DEFAULTS ARE ASSUMPTIONS: any parameter the user did not give falls back to
+   the reference test rig. The tool result lists what was user-specified vs
+   defaulted - ALWAYS summarize the assumed defaults in your answer (one short
+@@ -48,6 +79,19 @@ You can call tools before answering.
+   exploratory questions, run with defaults and state the assumptions.
+ """
+ 
++FAIL_CLOSED = (
++    "I can't give a grounded answer here: the numeric criterion this needs "
++    "(e.g. a required API 684 separation margin) isn't in the knowledge base, so "
++    "I won't assert it from outside sources. I can share the indicative figures "
++    "that are in the notes, or you can point me at a page that states the binding "
++    "requirement."
++)
++
++
++def _event(type_: str, **kw) -> str:
++    kw["type"] = type_
++    return json.dumps(kw) + "\n"
++
+ 
+ def _tool_result_to_str(result) -> str:
+     if isinstance(result, BaseModel):
+@@ -64,12 +108,121 @@ def _execute_tool_call(name: str, arguments: str) -> str:
+         args = json.loads(arguments) if arguments else {}
+         if not isinstance(args, dict):
+             return "ERROR: tool arguments must be a JSON object"
+-        return _tool_result_to_str(fn(args) if name == "run_rotordynamic_analysis"
+-                                   else fn(args))
++        return _tool_result_to_str(fn(args))
+     except Exception as e:  # noqa: BLE001 — surfaced to the model on purpose
+         return f"ERROR: {type(e).__name__}: {e}"
+ 
+ 
++def _retrieved_pages(convo: list[dict]) -> dict[str, str]:
++    """Slug -> text for every wiki page actually placed in the model's context
++    this turn (the up-front context message + any search_knowledge results)."""
++    blocks = [
++        m["content"] for m in convo
++        if isinstance(m.get("content"), str) and "### WIKI PAGE:" in m["content"]
++    ]
++    return grounding.pages_from_context(*blocks)
++
++
++async def _vet_and_finalize(client, convo, model, temperature, max_tokens,
++                            buffered_text: str) -> AsyncIterator[str]:
++    """Check the finished answer against its sources. Yields exactly one
++    `done` (clean) or `replace` (corrected / fail-closed) event."""
++    pages = _retrieved_pages(convo)
++    violations = grounding.find_violations(buffered_text, pages, loader=wiki_logic.load_page)
++    if not violations:
++        yield _event("done")
++        return
++
++    correction = (
++        "Your previous answer stated figures that are not supported by the sources "
++        "you cited:\n- " + "\n- ".join(violations) + "\n\n"
++        "Rewrite the answer using ONLY figures that actually appear in the retrieved "
++        "wiki context. If a required numeric criterion (e.g. an API 684 margin) is "
++        "not present in the context, say it is not available in the knowledge base "
++        "and give only the indicative figures that ARE present, each with its "
++        "(wiki: slug, Section) citation. Never use a number from outside the context, "
++        "and never attach a (wiki: ...) citation to a figure you did not read on that page."
++    )
++    corrective_convo = convo + [
++        {"role": "assistant", "content": buffered_text},
++        {"role": "system", "content": correction},
++    ]
++    response = await client.chat.completions.create(
++        model=model,
++        messages=corrective_convo,
++        temperature=0.0,
++        max_tokens=max_tokens,
++    )
++    fixed = response.choices[0].message.content or ""
++    if grounding.find_violations(fixed, pages, loader=wiki_logic.load_page):
++        fixed = FAIL_CLOSED
++    yield _event("replace", text=fixed)
++
++
++async def _stream_round(client, convo, model, tools, temperature, max_tokens,
++                        holder: dict) -> AsyncIterator[str]:
++    """Perform one streaming round.
++
++    Yields `delta` SSE events for content tokens as they arrive (forward these
++    to the user immediately). When the round ends, writes the outcome into
++    `holder`:
++        holder["kind"]    = "content" | "tool_calls"
++        holder["payload"] = full text  | list of {"id","name","arguments"}
++
++    If the round emitted some content before switching to tool_calls (a model
++    "thinking out loud" before invoking a tool), that partial content is
++    discarded and a `replace` event with empty text is yielded first, so the
++    frontend clears what it optimistically displayed — it was never the final
++    answer.
++    """
++    stream = await client.chat.completions.create(
++        model=model,
++        messages=convo,
++        tools=tools,
++        temperature=temperature,
++        max_tokens=max_tokens,
++        stream=True,
++    )
++
++    tool_calls_acc: dict[int, dict] = {}
++    content_parts: list[str] = []
++    saw_tool_calls = False
++
++    async for chunk in stream:
++        delta = chunk.choices[0].delta
++        tc = getattr(delta, "tool_calls", None)
++        if tc:
++            saw_tool_calls = True
++            for call_delta in tc:
++                idx = getattr(call_delta, "index", 0)
++                slot = tool_calls_acc.setdefault(idx, {"id": None, "name": None, "arguments": ""})
++                if getattr(call_delta, "id", None):
++                    slot["id"] = call_delta.id
++                fn = getattr(call_delta, "function", None)
++                if fn is not None:
++                    if getattr(fn, "name", None):
++                        slot["name"] = fn.name
++                    if getattr(fn, "arguments", None):
++                        slot["arguments"] += fn.arguments
++            continue
++
++        text = getattr(delta, "content", None)
++        if text:
++            content_parts.append(text)
++            yield _event("delta", text=text)
++
++    if saw_tool_calls:
++        if content_parts:
++            # We optimistically streamed preamble text before finding out this
++            # round was actually a tool call — it was never a final answer.
++            yield _event("replace", text="")
++        holder["kind"] = "tool_calls"
++        holder["payload"] = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
++    else:
++        holder["kind"] = "content"
++        holder["payload"] = "".join(content_parts)
++
++
+ async def run_agent(
+     client,
+     messages: list[dict],
+@@ -78,7 +231,8 @@ async def run_agent(
+     temperature: float = 0.1,
+     max_tokens: int = 2048,
+ ) -> AsyncIterator[str]:
+-    """Yield answer chunks, executing tool calls as the model requests them.
++    """Yield SSE-style JSON-line events, executing tool calls as the model
++    requests them and streaming the final answer token-by-token.
+ 
+     `client` is any AsyncOpenAI-compatible client (chat.completions.create).
+     """
+@@ -86,55 +240,43 @@ async def run_agent(
+     convo = list(messages)
+ 
+     for _round in range(max_tool_rounds):
+-        response = await client.chat.completions.create(
+-            model=model,
+-            messages=convo,
+-            tools=TOOL_SCHEMAS,
+-            temperature=temperature,
+-            max_tokens=max_tokens,
+-        )
+-        msg = response.choices[0].message
+-        tool_calls = getattr(msg, "tool_calls", None)
+-
+-        if not tool_calls:
+-            # Final answer reached inside the tool loop — emit it and stop.
+-            if msg.content:
+-                yield msg.content
++        holder: dict = {}
++        async for ev in _stream_round(client, convo, model, TOOL_SCHEMAS,
++                                      temperature, max_tokens, holder):
++            yield ev
++
++        if holder.get("kind") == "content":
++            async for ev in _vet_and_finalize(client, convo, model, temperature,
++                                              max_tokens, holder["payload"]):
++                yield ev
+             return
+ 
++        calls = holder.get("payload", [])
+         convo.append({
+             "role": "assistant",
+-            "content": msg.content or None,
++            "content": None,
+             "tool_calls": [
+                 {
+-                    "id": tc.id,
++                    "id": c["id"] or f"call_{i}",
+                     "type": "function",
+-                    "function": {
+-                        "name": tc.function.name,
+-                        "arguments": tc.function.arguments,
+-                    },
++                    "function": {"name": c["name"], "arguments": c["arguments"]},
+                 }
+-                for tc in tool_calls
++                for i, c in enumerate(calls)
+             ],
+         })
+-        for tc in tool_calls:
+-            result = _execute_tool_call(tc.function.name, tc.function.arguments)
++        for c in calls:
++            result = _execute_tool_call(c["name"], c["arguments"])
+             convo.append({
+                 "role": "tool",
+-                "tool_call_id": tc.id,
+-                "name": tc.function.name,
++                "tool_call_id": c["id"] or "call_0",
++                "name": c["name"],
+                 "content": result,
+             })
+ 
+-    # Tool budget exhausted: force a final streamed answer with no more tools.
+-    stream = await client.chat.completions.create(
+-        model=model,
+-        messages=convo,
+-        temperature=temperature,
+-        max_tokens=max_tokens,
+-        stream=True,
+-    )
+-    async for chunk in stream:
+-        delta = chunk.choices[0].delta
+-        if delta and getattr(delta, "content", None):
+-            yield delta.content
++    # Tool budget exhausted: force one final round with no tools available.
++    holder = {}
++    async for ev in _stream_round(client, convo, model, None, temperature, max_tokens, holder):
++        yield ev
++    async for ev in _vet_and_finalize(client, convo, model, temperature, max_tokens,
++                                      holder.get("payload", "")):
++        yield ev
+diff --git a/assistant/app/grounding.py b/assistant/app/grounding.py
+new file mode 100644
+index 0000000..f5e0d41
+--- /dev/null
++++ b/assistant/app/grounding.py
+@@ -0,0 +1,103 @@
++"""
++Post-generation grounding guard.
++
++The agent can retrieve the right page and still assert a figure that is not on
++it — e.g. "API 684 recommends a separation margin of at least 30%" dressed up
++with a real-looking (wiki: ...) citation — because the model knows the number
++from pre-training. Prompt rules lower how often that happens; they cannot
++guarantee it away on a small local model. This module is the deterministic
++backstop that runs between the model and the user.
++
++Rule enforced:
++    For every sentence that carries a (wiki: slug, Section) citation, every
++    number in that sentence must appear in the text of that slug's page.
++
++Design choices that matter:
++* We check numbers against the page the model *cited*, sourced first from the
++  text retrieved this turn and, failing that, loaded from disk. If we cannot
++  obtain the page text at all, we DO NOT flag — the guard only reports
++  provable fabrications, never guesses (keeps false positives at zero).
++* Numbers inside the (wiki: ...) / (run: ...) tokens themselves are ignored, so
++  section names, run dates, and run ids never trigger a false hit.
++* Only *sourced* numbers are checked. A number the model computed and did not
++  attribute to a wiki page (e.g. a separation margin it worked out) is not
++  pinned to a source, so it is out of scope here.
++"""
++
++from __future__ import annotations
++
++import re
++from collections.abc import Callable
++
++_WIKI_CITE = re.compile(r"\(wiki:\s*([^,>)]+)\s*[,>]\s*([^)]+)\)")
++_RUN_CITE = re.compile(r"\(run:\s*([^)]+)\)")
++_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
++_NUM = re.compile(r"\d+(?:\.\d+)?")
++_PAGE_MARK = re.compile(r"###\s*WIKI PAGE:\s*(\S+)")
++
++
++def pages_from_context(*context_blocks: str) -> dict[str, str]:
++    """Reconstruct slug -> retrieved text from the '### WIKI PAGE: <slug>'
++    blocks that were actually placed in the model's context this turn (the
++    up-front context message plus any search_knowledge tool results)."""
++    pages: dict[str, str] = {}
++    for block in context_blocks:
++        if not block:
++            continue
++        parts = _PAGE_MARK.split(block)
++        # parts = [pre, slug1, body1, slug2, body2, ...]
++        for i in range(1, len(parts) - 1, 2):
++            slug = parts[i].strip()
++            body = parts[i + 1]
++            pages[slug] = pages.get(slug, "") + "\n" + body
++    return pages
++
++
++def _page_text(slug: str,
++               pages: dict[str, str],
++               loader: Callable[[str], str | None] | None) -> str | None:
++    """Text of the cited page: retrieved context first, then disk. None if we
++    genuinely cannot read it (in which case the caller must not flag)."""
++    if slug in pages and pages[slug].strip():
++        return pages[slug]
++    if loader is not None:
++        try:
++            return loader(slug)
++        except Exception:
++            return None
++    return None
++
++
++def find_violations(answer: str,
++                    pages: dict[str, str],
++                    loader: Callable[[str], str | None] | None = None) -> list[str]:
++    """Return human-readable grounding violations found in `answer`.
++    Empty list means every sourced number we could verify checked out."""
++    problems: list[str] = []
++    for sentence in _SENT_SPLIT.split(answer):
++        cites = _WIKI_CITE.findall(sentence)
++        if not cites:
++            continue
++        # numbers in the sentence, excluding the citation tokens themselves
++        body = _RUN_CITE.sub("", _WIKI_CITE.sub("", sentence))
++        numbers = _NUM.findall(body)
++        if not numbers:
++            continue
++        for slug, _section in cites:
++            slug = slug.strip()
++            page = _page_text(slug, pages, loader)
++            if not page:
++                continue  # cannot verify -> stay silent
++            for num in numbers:
++                if num not in page:
++                    problems.append(
++                        f"figure '{num}' is cited to '{slug}' but does not appear on that page"
++                    )
++    # de-duplicate, preserve order
++    seen: set[str] = set()
++    ordered: list[str] = []
++    for p in problems:
++        if p not in seen:
++            seen.add(p)
++            ordered.append(p)
++    return ordered
+diff --git a/assistant/app/main.py b/assistant/app/main.py
+index 83e4e59..a3f2c75 100644
+--- a/assistant/app/main.py
++++ b/assistant/app/main.py
+@@ -130,16 +130,17 @@ async def chat_endpoint(request: ChatRequest):
+ 
+     # 5. Stream Completion through the tool-calling agent loop (Phase 3).
+     #    run_agent executes search_knowledge / run_rotordynamic_analysis as the
+-    #    model requests them, then streams the final grounded answer.
++    #    model requests them, then streams the final grounded answer as
++    #    newline-delimited JSON events: {"type": "delta"|"replace"|"done"|"error", ...}
+     async def stream_generator():
+         if client is None:
+-            yield f"Error: LLM client unavailable: {_client_error}"
++            yield json.dumps({"type": "error", "text": f"LLM client unavailable: {_client_error}"}) + "\n"
+             return
+         try:
+             async for chunk in agent.run_agent(client, messages):
+                 yield chunk
+         except Exception as e:
+-            yield f"Error: {str(e)}"
++            yield json.dumps({"type": "error", "text": str(e)}) + "\n"
+ 
+     return StreamingResponse(stream_generator(), media_type="text/event-stream")
+ 
+diff --git a/assistant/static/script.js b/assistant/static/script.js
+index c6a5683..f0b31e9 100644
+--- a/assistant/static/script.js
++++ b/assistant/static/script.js
+@@ -255,31 +255,54 @@ document.addEventListener('DOMContentLoaded', () => {
+ 
+             contentDiv.innerHTML = '';
+             assistantMsgDiv.classList.add('typing');
+-            let fullReply = '';
+-            
++            let displayed = '';   // what the user currently sees
++            let lineBuffer = '';  // partial JSON line split across chunk boundaries
++
+             const reader = response.body.getReader();
+             const decoder = new TextDecoder();
+ 
+             while (true) {
+                 const { done, value } = await reader.read();
+                 if (done) break;
+-                
+-                const chunk = decoder.decode(value, { stream: true });
+-                fullReply += chunk;
+-                
+-                // Parse markdown and citations in progress
+-                contentDiv.innerHTML = parseAssistantResponse(fullReply) + '<span class="cursor"></span>';
+-                chatHistory.scrollTop = chatHistory.scrollHeight;
++
++                lineBuffer += decoder.decode(value, { stream: true });
++                const lines = lineBuffer.split('\n');
++                lineBuffer = lines.pop(); // last (possibly partial) line stays buffered
++
++                for (const line of lines) {
++                    if (!line.trim()) continue;
++                    let evt;
++                    try { evt = JSON.parse(line); } catch { continue; }
++
++                    if (evt.type === 'delta') {
++                        // Optimistic: token arrives, shown immediately.
++                        displayed += evt.text;
++                        contentDiv.innerHTML = parseAssistantResponse(displayed) + '<span class="cursor"></span>';
++                        chatHistory.scrollTop = chatHistory.scrollHeight;
++                    } else if (evt.type === 'replace') {
++                        // The grounding check rejected what was shown (or this
++                        // clears an abandoned tool-call preamble). Swap it out.
++                        displayed = evt.text || '';
++                        assistantMsgDiv.classList.add('verified-flash');
++                        contentDiv.innerHTML = parseAssistantResponse(displayed) + '<span class="cursor"></span>';
++                        chatHistory.scrollTop = chatHistory.scrollHeight;
++                    } else if (evt.type === 'error') {
++                        displayed = evt.text || 'Error communicating with AI assistant.';
++                        contentDiv.innerHTML = escapeHtml(displayed);
++                    }
++                    // 'done' needs no action — displayed already holds the final text.
++                }
+             }
+ 
+             // Remove cursor and typing class
+             assistantMsgDiv.classList.remove('typing');
+-            contentDiv.innerHTML = parseAssistantResponse(fullReply);
++            setTimeout(() => assistantMsgDiv.classList.remove('verified-flash'), 700);
++            contentDiv.innerHTML = parseAssistantResponse(displayed);
+             renderMath(contentDiv);
+ 
+             // Update history
+             history.push({ role: 'user', content: message });
+-            history.push({ role: 'assistant', content: fullReply });
++            history.push({ role: 'assistant', content: displayed });
+ 
+             // The reply may have ingested a new run report - refresh the tree
+             loadPages();
+diff --git a/assistant/static/style.css b/assistant/static/style.css
+index f8a86a4..a110d35 100644
+--- a/assistant/static/style.css
++++ b/assistant/static/style.css
+@@ -516,6 +516,17 @@ body {
+     50% { opacity: 0; }
+ }
+ 
++/* Grounding-check correction: brief highlight when a citation-verified
++   rewrite replaces what was optimistically streamed. */
++.chat-message.verified-flash .message-content {
++    animation: verified-flash 0.7s ease-out;
++}
++
++@keyframes verified-flash {
++    0%   { box-shadow: 0 0 0 2px var(--accent-primary); }
++    100% { box-shadow: 0 0 0 0 transparent; }
++}
++
+ /* Citation links in chat */
+ .citation {
+     color: var(--accent-primary);
+diff --git a/assistant/tests/streaming_fakes.py b/assistant/tests/streaming_fakes.py
+new file mode 100644
+index 0000000..d4f4113
+--- /dev/null
++++ b/assistant/tests/streaming_fakes.py
+@@ -0,0 +1,54 @@
++"""Fake OpenAI-compatible streaming primitives, shared across test modules.
++
++Mimics the real shape closely enough for agent.py's _stream_round to work
++against it: content chunks carry `delta.content`; tool-call chunks carry
++`delta.tool_calls`, a list of deltas each with `.index`, optionally `.id`,
++and `.function.name` / `.function.arguments` (arguments streamed as
++incremental fragments, exactly like real providers do it — name arrives on
++the first chunk for that index, arguments accumulate across chunks).
++"""
++
++from __future__ import annotations
++
++import types
++
++
++class _Delta:
++    def __init__(self, content=None, tool_calls=None):
++        self.content = content
++        self.tool_calls = tool_calls
++
++
++class _Chunk:
++    def __init__(self, delta):
++        self.choices = [types.SimpleNamespace(delta=delta)]
++
++
++class _NonStreamResponse:
++    """Shape returned for stream=False calls (used only by the one-shot
++    self-correction request in agent._vet_and_finalize)."""
++    def __init__(self, content):
++        self.choices = [types.SimpleNamespace(
++            message=types.SimpleNamespace(content=content, tool_calls=None))]
++
++
++async def content_stream(text: str, chunk_size: int = 12):
++    """Fake stream of content-only chunks for a final-answer round."""
++    for i in range(0, len(text), chunk_size):
++        yield _Chunk(_Delta(content=text[i:i + chunk_size]))
++
++
++async def tool_call_stream(name: str, arguments_json: str, call_id: str = "call_1"):
++    """Fake stream for a tool-call round: name arrives on chunk 1 (empty
++    arguments), the arguments JSON arrives as fragment(s) after."""
++    yield _Chunk(_Delta(tool_calls=[
++        types.SimpleNamespace(index=0, id=call_id,
++                              function=types.SimpleNamespace(name=name, arguments=""))
++    ]))
++    mid = max(1, len(arguments_json) // 2)
++    for frag in (arguments_json[:mid], arguments_json[mid:]):
++        if frag:
++            yield _Chunk(_Delta(tool_calls=[
++                types.SimpleNamespace(index=0, id=None,
++                                      function=types.SimpleNamespace(name=None, arguments=frag))
++            ]))
+diff --git a/assistant/tests/test_agent.py b/assistant/tests/test_agent.py
+index 872636b..af2ade5 100644
+--- a/assistant/tests/test_agent.py
++++ b/assistant/tests/test_agent.py
+@@ -1,8 +1,9 @@
+-"""Phase 3 — agent loop with the LLM fully mocked. Proves:
++"""Phase 3 — agent loop with the LLM fully mocked (true streaming). Proves:
+   * a numeric question triggers run_rotordynamic_analysis,
+   * the run report is ingested into the wiki,
+-  * the final answer carries both (run: ...) and (wiki: ...) citations,
+-  * /api/chat streams the agent's answer (no live endpoint / LLM anywhere).
++  * the final answer streams token-by-token and carries both (run: ...) and
++    (wiki: ...) citations,
++  * /api/chat streams JSON-line events (no live endpoint / LLM anywhere).
+ """
+ 
+ import asyncio
+@@ -12,81 +13,29 @@ import pytest
+ from fastapi.testclient import TestClient
+ 
+ from assistant.app import agent, main, tools, wiki_logic
++from assistant.tests.streaming_fakes import _NonStreamResponse, content_stream, tool_call_stream
+ 
+ 
+-# ----------------------------------------------------------------------
+-# Minimal OpenAI-compatible fakes
+-# ----------------------------------------------------------------------
+-
+-class FakeFunction:
+-    def __init__(self, name, arguments):
+-        self.name, self.arguments = name, arguments
+-
+-
+-class FakeToolCall:
+-    def __init__(self, id_, name, arguments):
+-        self.id, self.type = id_, "function"
+-        self.function = FakeFunction(name, arguments)
+-
+-
+-class FakeMessage:
+-    def __init__(self, content=None, tool_calls=None):
+-        self.content, self.tool_calls = content, tool_calls
+-
+-
+-class _Choice:
+-    def __init__(self, message=None, delta=None):
+-        self.message, self.delta = message, delta
+-
+-
+-class _Response:
+-    def __init__(self, message):
+-        self.choices = [_Choice(message=message)]
+-
+-
+-class _Delta:
+-    def __init__(self, content):
+-        self.content = content
+-
+-
+-async def _stream(chunks):
+-    for c in chunks:
+-        yield type("Chunk", (), {"choices": [_Choice(delta=_Delta(c))]})()
+-
+-
+-class FakeLLM:
+-    """Scripted local-LLM stand-in: first requests the FEA tool, then answers
+-    with citations pulled from the real tool result it was handed back."""
+-
+-    def __init__(self):
+-        self.calls = []
+-        self.chat = self
+-        self.completions = self
+-
+-    async def create(self, **kwargs):
+-        self.calls.append(kwargs)
+-        messages = kwargs["messages"]
+-
+-        if kwargs.get("stream"):
+-            return _stream(["streamed ", "fallback ", "answer"])
++def _collect(gen):
++    async def go():
++        return [chunk async for chunk in gen]
++    return asyncio.run(go())
+ 
+-        tool_results = [m for m in messages if m.get("role") == "tool"]
+-        if not tool_results:
+-            # Round 1: the model decides the question needs numbers.
+-            args = json.dumps({"speed": {"start_rad_s": 10, "stop_rad_s": 800,
+-                                         "step_rad_s": 20}})
+-            return _Response(FakeMessage(
+-                tool_calls=[FakeToolCall("call_1", "run_rotordynamic_analysis", args)]))
+ 
+-        # Round 2: ground the answer in the tool result, like a good model would.
+-        run = json.loads(tool_results[-1]["content"])
+-        page_id = run["report_slug"].rsplit("/", 1)[-1]
+-        first = run["critical_speeds_rad_s"][0]
+-        return _Response(FakeMessage(content=(
+-            f"The first critical speed is {first:.1f} rad/s (run: {page_id}). "
+-            f"API 684 recommends operating away from it by a separation margin "
+-            f"(wiki: critical-speeds-and-separation-margin, Separation margin)."
+-        )))
++def _reconstruct(raw_lines: list[str]) -> str:
++    """Mirror the frontend: apply delta/replace events to get what the user
++    would actually see at the end."""
++    displayed = ""
++    for line in raw_lines:
++        for sub in line.splitlines():
++            if not sub.strip():
++                continue
++            evt = json.loads(sub)
++            if evt["type"] == "delta":
++                displayed += evt["text"]
++            elif evt["type"] == "replace":
++                displayed = evt["text"]
++    return displayed
+ 
+ 
+ @pytest.fixture()
+@@ -100,23 +49,44 @@ def tmp_wiki(monkeypatch, tmp_path):
+     return wiki
+ 
+ 
+-def _collect(gen):
+-    async def go():
+-        return [chunk async for chunk in gen]
+-    return asyncio.run(go())
+-
+-
+ # ----------------------------------------------------------------------
+ # Tests
+ # ----------------------------------------------------------------------
+ 
+ def test_numeric_question_runs_fea_and_cites_both_sources(tmp_wiki):
++    class FakeLLM:
++        """Round 1: streams a tool call. Round 2: streams the grounded answer,
++        built from the real tool result it was handed back."""
++        def __init__(self):
++            self.calls = []
++            self.chat = self
++            self.completions = self
++
++        async def create(self, **kwargs):
++            self.calls.append(kwargs)
++            messages = kwargs["messages"]
++            tool_results = [m for m in messages if m.get("role") == "tool"]
++            if not tool_results:
++                args = json.dumps({"speed": {"start_rad_s": 10, "stop_rad_s": 800,
++                                             "step_rad_s": 20}})
++                return tool_call_stream("run_rotordynamic_analysis", args)
++            run = json.loads(tool_results[-1]["content"])
++            page_id = run["report_slug"].rsplit("/", 1)[-1]
++            first = run["critical_speeds_rad_s"][0]
++            text = (
++                f"The first critical speed is {first:.1f} rad/s (run: {page_id}). "
++                f"API 684 recommends operating away from it by a separation margin "
++                f"(wiki: critical-speeds-and-separation-margin, Separation margin)."
++            )
++            return content_stream(text)
++
+     llm = FakeLLM()
+     messages = [
+         {"role": "system", "content": wiki_logic.SYSTEM_PROMPT + agent.AGENT_PROMPT_SUFFIX},
+         {"role": "user", "content": "What is the first critical speed of the 13 mm rig?"},
+     ]
+-    answer = "".join(_collect(agent.run_agent(llm, messages)))
++    raw = _collect(agent.run_agent(llm, messages))
++    answer = _reconstruct(raw)
+ 
+     # tool actually executed and the report was ingested
+     runs = list((tmp_wiki / "runs").glob("*.md"))
+@@ -135,6 +105,11 @@ def test_numeric_question_runs_fea_and_cites_both_sources(tmp_wiki):
+     tool_names = [t["function"]["name"] for t in llm.calls[0]["tools"]]
+     assert set(tool_names) == {"search_knowledge", "run_rotordynamic_analysis"}
+ 
++    # genuinely streamed: more than one delta event reached the caller
++    delta_events = sum(1 for line in raw for sub in line.splitlines() if sub.strip()
++                       and json.loads(sub)["type"] == "delta")
++    assert delta_events > 1, "final answer should stream in multiple chunks, not one blob"
++
+ 
+ def test_tool_errors_are_fed_back_not_raised(tmp_wiki):
+     out = agent._execute_tool_call("run_rotordynamic_analysis",
+@@ -145,23 +120,50 @@ def test_tool_errors_are_fed_back_not_raised(tmp_wiki):
+ 
+ 
+ def test_exhausted_tool_budget_falls_back_to_streaming(tmp_wiki):
+-    class LoopingLLM(FakeLLM):
++    class LoopingLLM:
++        def __init__(self):
++            self.calls = []
++            self.chat = self
++            self.completions = self
++
+         async def create(self, **kwargs):
+             self.calls.append(kwargs)
+-            if kwargs.get("stream"):
+-                return _stream(["final ", "streamed"])
+-            args = json.dumps({"query": "critical speed"})
+-            return _Response(FakeMessage(
+-                tool_calls=[FakeToolCall(f"c{len(self.calls)}", "search_knowledge", args)]))
++            if kwargs.get("tools"):  # still has a tool budget -> keep looping
++                args = json.dumps({"query": "critical speed"})
++                return tool_call_stream("search_knowledge", args, call_id=f"c{len(self.calls)}")
++            # forced final round: tools=None -> plain content, no citations
++            return content_stream("final streamed answer")
+ 
+     llm = LoopingLLM()
+-    chunks = _collect(agent.run_agent(llm, [{"role": "user", "content": "hi"}],
+-                                      max_tool_rounds=2))
+-    assert "".join(chunks) == "final streamed"
++    raw = _collect(agent.run_agent(llm, [{"role": "user", "content": "hi"}],
++                                   max_tool_rounds=2))
++    answer = _reconstruct(raw)
++    assert answer == "final streamed answer"
++    # last call is the forced round with no tools
++    assert llm.calls[-1].get("tools") is None
+     assert llm.calls[-1].get("stream") is True
+ 
+ 
+ def test_api_chat_streams_agent_answer(tmp_wiki, monkeypatch):
++    class FakeLLM:
++        def __init__(self):
++            self.calls = []
++            self.chat = self
++            self.completions = self
++
++        async def create(self, **kwargs):
++            self.calls.append(kwargs)
++            messages = kwargs["messages"]
++            tool_results = [m for m in messages if m.get("role") == "tool"]
++            if not tool_results:
++                args = json.dumps({})
++                return tool_call_stream("run_rotordynamic_analysis", args)
++            run = json.loads(tool_results[-1]["content"])
++            page_id = run["report_slug"].rsplit("/", 1)[-1]
++            text = (f"First critical speed noted (run: {page_id}). "
++                    f"(wiki: critical-speeds-and-separation-margin, Separation margin)")
++            return content_stream(text)
++
+     llm = FakeLLM()
+     monkeypatch.setattr(main, "client", llm)
+ 
+@@ -169,4 +171,5 @@ def test_api_chat_streams_agent_answer(tmp_wiki, monkeypatch):
+         resp = tc.post("/api/chat", json={"message": "First critical speed of the rig?",
+                                           "history": []})
+     assert resp.status_code == 200
+-    assert "(run: " in resp.text and "(wiki: " in resp.text
++    answer = _reconstruct([resp.text])
++    assert "(run: " in answer and "(wiki: " in answer
+diff --git a/assistant/tests/test_grounding.py b/assistant/tests/test_grounding.py
+new file mode 100644
+index 0000000..deee0fb
+--- /dev/null
++++ b/assistant/tests/test_grounding.py
+@@ -0,0 +1,147 @@
++"""Grounding guard + self-correction gate — fully mocked, no network, no LLM.
++
++Covers the exact failure that motivated it: the model retrieves the right page,
++then asserts a figure that is NOT on it ("API 684 requires 30%") wrapped in a
++real-looking (wiki: ...) citation. The guard must catch it; run_agent must
++self-correct once and, if the model still can't ground it, fail closed.
++
++Also covers that the answer genuinely streams (multiple `delta` events) rather
++than arriving as one block, and that a `replace` event is what the frontend
++uses to swap in the corrected text.
++"""
++
++import asyncio
++import json
++
++from assistant.app import agent, grounding
++from assistant.tests.streaming_fakes import _NonStreamResponse, content_stream
++
++
++# ---------------------------------------------------------------- unit tests
++
++def test_flags_number_not_on_cited_page():
++    pages = {"gloss": "Separation margin: required distance; grows with AF "
++                      "(see API 684 concepts)."}
++    answer = "API 684 requires at least 30% margin (wiki: gloss, Terms)."
++    problems = grounding.find_violations(answer, pages)
++    # 684 is on the page, 30 is not -> exactly the fabricated figure is flagged.
++    assert any("30" in p and "gloss" in p for p in problems)
++    assert not any("684" in p for p in problems)
++
++
++def test_passes_number_present_on_cited_page():
++    pages = {"cs": "Indicative margins are 15-16 percent below and 20-26 above."}
++    answer = "Indicative margins run about 15 to 16 percent (wiki: cs, Margins)."
++    assert grounding.find_violations(answer, pages) == []
++
++
++def test_skips_when_page_text_unavailable():
++    answer = "API 684 requires 30% (wiki: gloss, Terms)."
++    assert grounding.find_violations(answer, {}, loader=None) == []
++
++
++def test_ignores_numbers_inside_citation_tokens():
++    pages = {"cs": "no numbers here at all"}
++    answer = "See the concept (wiki: cs, Section 2.5) and (run: 2026-07-19-run-003)."
++    assert grounding.find_violations(answer, pages) == []
++
++
++# --------------------------------------------------- integration (run_agent)
++
++CONTEXT = (
++    "=== WIKI LIBRARY CONTEXT ===\n\n"
++    "### WIKI PAGE: gloss\n## Terms\n"
++    "Separation margin: required distance between a critical and the operating "
++    "range; grows with AF (see API 684 concepts).\n\n"
++    "### WIKI PAGE: cs\n## Separation margin\n"
++    "Indicative API 684 figures: 15-16 percent below the minimum, 20-26 percent "
++    "above the maximum, increasing with AF.\n"
++)
++
++BAD = "API 684 requires a separation margin of at least 30% (wiki: gloss, Terms)."
++GOOD = ("The exact API 684 margin is not stated in the notes; the indicative "
++        "figures are 15-16 percent below and 20-26 percent above "
++        "(wiki: cs, Separation margin).")
++
++
++class SelfCorrectingLLM:
++    """Streams the fabrication first (final-answer round). The one-shot
++    self-correction call is non-streaming (agent._vet_and_finalize), so it
++    returns a plain response object instead."""
++    def __init__(self):
++        self.calls = []
++        self.chat = self
++        self.completions = self
++
++    async def create(self, **kwargs):
++        self.calls.append(kwargs)
++        if kwargs.get("stream"):
++            return content_stream(BAD)
++        # non-streaming call -> this is the correction round
++        return _NonStreamResponse(GOOD)
++
++
++class StubbornLLM(SelfCorrectingLLM):
++    """Never grounds it, even after correction -> should fail closed."""
++    async def create(self, **kwargs):
++        self.calls.append(kwargs)
++        if kwargs.get("stream"):
++            return content_stream(BAD)
++        return _NonStreamResponse(BAD)
++
++
++def _run(llm):
++    messages = [
++        {"role": "system", "content": agent.wiki_logic.SYSTEM_PROMPT},
++        {"role": "system", "content": CONTEXT},
++        {"role": "user", "content": "Is run-003 compliant with API 684 at 60 Hz?"},
++    ]
++    async def go():
++        return [chunk async for chunk in agent.run_agent(llm, messages)]
++    return asyncio.run(go())
++
++
++def _reconstruct(raw_lines):
++    displayed = ""
++    for line in raw_lines:
++        for sub in line.splitlines():
++            if not sub.strip():
++                continue
++            evt = json.loads(sub)
++            if evt["type"] == "delta":
++                displayed += evt["text"]
++            elif evt["type"] == "replace":
++                displayed = evt["text"]
++    return displayed
++
++
++def test_answer_streams_before_the_gate_checks_it():
++    llm = SelfCorrectingLLM()
++    raw = _run(llm)
++    delta_events = [json.loads(s) for line in raw for s in line.splitlines()
++                    if s.strip() and json.loads(s)["type"] == "delta"]
++    assert len(delta_events) > 1, "the (eventually-rejected) answer should still stream token by token"
++    # the fabrication really was shown to the user, if only briefly
++    streamed_text = "".join(e["text"] for e in delta_events)
++    assert "30%" in streamed_text
++
++
++def test_self_corrects_a_cited_fabrication_via_replace_event():
++    llm = SelfCorrectingLLM()
++    raw = _run(llm)
++    final = _reconstruct(raw)
++    assert "30%" not in final, "the fabricated threshold must not survive as the final text"
++    assert "15-16" in final and "(wiki: cs" in final
++
++    types_seen = [json.loads(s)["type"] for line in raw for s in line.splitlines() if s.strip()]
++    assert "replace" in types_seen, "correction must arrive as a replace event for the frontend"
++    assert llm.calls[0].get("stream") is True       # the streamed (bad) answer
++    assert llm.calls[1].get("stream") is not True   # the non-streaming correction
++
++
++def test_fails_closed_when_still_ungrounded():
++    llm = StubbornLLM()
++    raw = _run(llm)
++    final = _reconstruct(raw)
++    assert final == agent.FAIL_CLOSED
++    assert "30%" not in final

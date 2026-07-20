@@ -26,15 +26,27 @@ from engine.rotordynamics.analysis import RotordynamicAnalysis
 from engine.rotordynamics.report import build_report, build_wiki_page
 from engine.rotordynamics.schema import RunParams, RunResult
 
-from . import wiki_logic
+from . import wiki_logic, wiki_vector
 
 
 # ----------------------------------------------------------------------
-# Tool 1 — knowledge search (delegates to the existing retriever)
+# Tool 1 — knowledge search (delegates to the selected retriever)
 # ----------------------------------------------------------------------
 
-def search_knowledge(query: str) -> str:
-    """Retrieve cited wiki context for a query via wiki_logic.build_context."""
+def search_knowledge(query: str, mode: str = "lexical") -> str:
+    """Retrieve cited wiki context for a query.
+
+    mode="vector" uses the embedding retriever (wiki_vector) when its optional
+    dependency is installed; anything else — including a vector failure at
+    query time — falls back to the lexical retriever. Retrieval must never
+    take down a chat turn, and the lexical path has no failure modes (pure
+    regex + file reads), so it is the unconditional safety net.
+    """
+    if mode == "vector" and wiki_vector.is_available():
+        try:
+            return wiki_vector.build_context(query, wiki_logic.CONTEXT_BUDGET)
+        except Exception:
+            pass  # e.g. model download failed offline -> lexical fallback
     index = wiki_logic.load_wiki_index()
     return wiki_logic.build_context(query, index, wiki_logic.CONTEXT_BUDGET)
 
@@ -305,7 +317,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-TOOL_DISPATCH = {
-    "search_knowledge": lambda args: search_knowledge(**args),
-    "run_rotordynamic_analysis": lambda args: run_rotordynamic_analysis(args),
-}
+def make_tool_dispatch(rag_mode: str = "lexical") -> dict[str, Any]:
+    """Per-request tool table binding search_knowledge to the retrieval mode
+    the frontend asked for. The mode is captured in a closure rather than
+    module state, so concurrent chats with different toggles never interfere."""
+    return {
+        "search_knowledge": lambda args: search_knowledge(args["query"], mode=rag_mode),
+        "run_rotordynamic_analysis": lambda args: run_rotordynamic_analysis(args),
+    }
+
+
+TOOL_DISPATCH = make_tool_dispatch()
